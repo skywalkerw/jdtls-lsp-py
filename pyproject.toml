@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liteclaw-lsp"
+version = "0.1.0"
+description = "Standalone Python wrapper for JDTLS (Eclipse JDT Language Server), aligned with LiteClaw LSP usage"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+liteclaw-lsp = "liteclaw_lsp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
