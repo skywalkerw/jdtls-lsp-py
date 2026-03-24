@@ -1,53 +1,90 @@
-# liteclaw-lsp（Python）
+# jdtls-lsp（Python）
 
-与 [LiteClaw](../liteclaw) 中 `src/lsp` 行为对齐的 **独立可运行** Python 包装：启动 JDTLS、通过 LSP（stdio JSON-RPC）调用与 `lsp_java_analyze` 相同的操作。
+`jdtls-lsp` 是一个独立可运行的 Python 包，用于启动 JDTLS 并通过 LSP（stdio JSON-RPC）执行 Java 代码分析操作（与 LiteClaw 的 `lsp_java_analyze` 语义保持一致）。
 
 ## 依赖
 
-- **Python 3.10+**
-- **Java 21+**（`java` 在 `PATH` 或 `JAVA_HOME`）
-- **JDTLS**：默认使用 `~/.liteclaw/jdtls`（与 LiteClaw 相同布局：含 `config_mac|config_linux|config_win` 与 `plugins/org.eclipse.equinox.launcher_*.jar`）。若未安装，请先在本机用 LiteClaw 执行 `liteclaw lsp install-jdtls`，或自行解压官方包到该目录。
+- Python 3.10+
+- Java 21+（优先使用当前目录 `./openjdk/bin/java`，否则使用 `PATH`/`JAVA_HOME` 中的 `java`）
+- JDTLS 目录（需包含 `config_mac|config_linux|config_win` 和 `plugins/org.eclipse.equinox.launcher_*.jar`）
 
-## 安装（开发模式）
+JDTLS 默认查找优先级：
+
+1. `LITECLAW_JDTLS_PATH`
+2. 当前目录 `./jdtls`
+3. `~/jdtls`（兜底）
+
+## 推荐初始化（含离线包）
+
+项目内置 `setup.sh`，会自动：
+
+- 检查 Python / Java 版本
+- 优先离线安装 OpenJDK（如有匹配当前系统的压缩包）
+- 如果 `offline-packages/` 有 JDTLS 压缩包（`*.tar.gz|*.tgz|*.zip`），自动解压到 `./jdtls`
+- 优先尝试全局执行 `pip install -e .`，失败时自动回退到项目 `.venv`
+- 如果没有离线包，输出中文安装指引
 
 ```bash
-cd liteclaw-lsp-py
+cd jdtls-lsp-py
+./setup.sh
+# 若全局安装成功可直接使用：
+jdtls-lsp analyze --help
+# 若回退到 .venv，可使用：
+./.venv/bin/jdtls-lsp analyze --help
+```
+
+## 手动安装
+
+```bash
+cd jdtls-lsp-py
 pip install -e .
 ```
 
-不安装也可直接运行（将 `src` 加入 `PYTHONPATH`）：
+## 不安装直接运行
 
 ```bash
-cd liteclaw-lsp-py
-PYTHONPATH=src python3 -m liteclaw_lsp analyze --help
+cd jdtls-lsp-py
+PYTHONPATH=src python3 -m jdtls_lsp analyze --help
 ```
 
-## 命令行
+也可以不使用 `-m`：
 
 ```bash
-# 文档符号（相对 project 的 .java 路径）
-liteclaw-lsp analyze /path/to/maven-or-gradle-project documentSymbol \
+PYTHONPATH=src python3 src/jdtls_lsp/__main__.py analyze --help
+```
+
+## 命令行示例
+
+```bash
+# 文档符号（file 为相对 project 的 .java 路径）
+jdtls-lsp analyze /path/to/project documentSymbol \
   --file src/main/java/com/example/App.java
 
-# 工作区符号（query 建议完整类名或包名前缀）
-liteclaw-lsp analyze /path/to/project workspaceSymbol --query com.example.MyService
+# 工作区符号
+jdtls-lsp analyze /path/to/project workspaceSymbol --query com.example.MyService
 
-# 定义 / 引用 / hover（行、列为 1-based，与 LiteClaw 工具一致）
-liteclaw-lsp analyze /path/to/project references \
-  --file src/main/java/com/example/App.java --line 10 --column 1
-
-# 环境变量
-export LITECLAW_JDTLS_PATH=/path/to/jdtls   # 可选，默认 ~/.liteclaw/jdtls
+# 引用（line/char 为 1-based）
+jdtls-lsp analyze /path/to/project references \
+  --file src/main/java/com/example/App.java --line 10 --char 1
 ```
 
-子命令 `analyze` 的 `operation` 取值：`documentSymbol` | `workspaceSymbol` | `definition` | `references` | `hover` | `implementation` | `incomingCalls` | `outgoingCalls`。
+`operation` 支持：
 
-**输出**：默认输出完整 JSON，**不截断**字符长度（与 LiteClaw `lsp_java_analyze` 当前行为一致）。
+- `documentSymbol`
+- `workspaceSymbol`
+- `definition`
+- `references`
+- `hover`
+- `implementation`
+- `incomingCalls`
+- `outgoingCalls`
 
-## 作为库
+输出为完整 JSON（不做长度截断）。
+
+## 作为库调用
 
 ```python
-from liteclaw_lsp.analyze import analyze_sync
+from jdtls_lsp.analyze import analyze_sync
 
 out = analyze_sync(
     "/path/to/project",
@@ -59,7 +96,86 @@ out = analyze_sync(
 print(out)
 ```
 
-## 与 LiteClaw 的关系
+## 常见报错排查
 
-- 不依赖 Node / LiteClaw 运行时；仅复用同一套 JDTLS 安装路径与 LSP 请求语义。
-- 项目根目录通过向上查找 `pom.xml` / `build.gradle` 等标记解析，与 `liteclaw/src/lsp/jdtls.ts` 的 `findProjectRoot` 一致。
+### 1) `需要 Python 3.10+` / `未找到 Python`
+
+- 先确认版本：
+
+```bash
+python3 --version
+```
+
+- 如果系统有多个 Python，优先用 `python3`：
+
+```bash
+cd jdtls-lsp-py
+python3 -m pip install -e .
+PYTHONPATH=src python3 -m jdtls_lsp analyze --help
+```
+
+### 2) `需要 Java 21+` / `未找到 Java`
+
+- 检查 Java 版本：
+
+```bash
+java -version
+```
+
+- 如果 `java` 不在 PATH，请设置 `JAVA_HOME` 并补 PATH（按你的系统方式配置）。
+
+### 3) `JDTLS not found under ...`
+
+表示没有在默认位置找到 JDTLS，按以下顺序检查：
+
+1. 是否设置了 `LITECLAW_JDTLS_PATH`
+2. 当前目录下是否存在 `./jdtls`
+3. `~/jdtls` 是否存在
+
+目录必须至少包含：
+
+- `config_mac` / `config_linux` / `config_win`（与你系统对应）
+- `plugins/org.eclipse.equinox.launcher_*.jar`
+
+可直接使用：
+
+```bash
+cd jdtls-lsp-py
+./setup.sh
+```
+
+### 4) 离线包已解压，但提示目录结构不识别
+
+脚本会输出临时解压目录。请手动检查后，把正确的 JDTLS 根目录移动到：
+
+```bash
+jdtls-lsp-py/jdtls
+```
+
+然后重试命令。
+
+### 5) `workspaceSymbol` 无结果
+
+这是 JDTLS 刚启动时常见现象。当前实现已内置一次延迟重试（约 8 秒）。
+
+建议：
+
+- 使用更完整的类名或包名前缀（例如 `com.example.MyService`）
+- 确认项目根目录正确（包含 `pom.xml` / `build.gradle`）
+- 先执行一次 `documentSymbol` 验证文件可被正常打开与解析
+
+### 6) 直接运行报 `ModuleNotFoundError: No module named 'jdtls_lsp'`
+
+未安装时需要设置 `PYTHONPATH=src`：
+
+```bash
+cd jdtls-lsp-py
+PYTHONPATH=src python3 -m jdtls_lsp analyze --help
+```
+
+或直接安装：
+
+```bash
+cd jdtls-lsp-py
+python3 -m pip install -e .
+```

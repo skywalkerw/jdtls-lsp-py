@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from liteclaw_lsp.client import LSPClient, create_client
+from jdtls_lsp.client import LSPClient, create_client
 
 WORKSPACE_SYMBOL_WARMUP_S = 8.0
 

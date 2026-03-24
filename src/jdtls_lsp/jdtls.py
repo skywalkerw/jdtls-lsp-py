@@ -45,10 +45,18 @@ def _parse_java_major(stderr: str) -> int | None:
     return int(head.group(1)) if head else None
 
 
-def check_java_version() -> tuple[bool, str | None]:
+def _preferred_java_exe() -> str:
+    local_java = Path.cwd() / "openjdk" / "bin" / ("java.exe" if platform.system() == "Windows" else "java")
+    if local_java.exists():
+        return str(local_java)
+    return "java.exe" if platform.system() == "Windows" else "java"
+
+
+def check_java_version(java_exe: str | None = None) -> tuple[bool, str | None]:
+    exe = java_exe or _preferred_java_exe()
     try:
         r = subprocess.run(
-            ["java", "-version"],
+            [exe, "-version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -63,8 +71,14 @@ def check_java_version() -> tuple[bool, str | None]:
 
 
 def _default_jdtls_path() -> Path:
+    env_path = os.environ.get("LITECLAW_JDTLS_PATH")
+    if env_path:
+        return Path(env_path)
+    local_path = Path.cwd() / "jdtls"
+    if local_path.exists():
+        return local_path
     home = Path.home()
-    return Path(os.environ.get("LITECLAW_JDTLS_PATH", str(home / ".liteclaw" / "jdtls")))
+    return home / "jdtls"
 
 
 def _find_launcher_jar(jdtls_root: Path) -> Path | None:
@@ -90,7 +104,8 @@ def spawn_jdtls(project_root: str, jdtls_path: Path | None = None) -> tuple[subp
     Start JDTLS process. Returns (process, temp data dir, launcher jar path).
     Caller must delete data_dir after shutdown.
     """
-    ok, err = check_java_version()
+    java_exe = _preferred_java_exe()
+    ok, err = check_java_version(java_exe=java_exe)
     if not ok:
         raise RuntimeError(err or "Java check failed")
 
@@ -98,7 +113,7 @@ def spawn_jdtls(project_root: str, jdtls_path: Path | None = None) -> tuple[subp
     launcher = _find_launcher_jar(root)
     if launcher is None:
         raise RuntimeError(
-            f"JDTLS not found under {root}. Install with LiteClaw: liteclaw lsp install-jdtls",
+            f"JDTLS not found under {root}. Run setup.sh or install under ./jdtls (preferred) or ~/jdtls",
         )
 
     config_name = _config_dir_name()
@@ -108,7 +123,6 @@ def spawn_jdtls(project_root: str, jdtls_path: Path | None = None) -> tuple[subp
 
     data_dir = Path(tempfile.mkdtemp(prefix="liteclaw-jdtls-"))
 
-    java_exe = "java.exe" if platform.system() == "Windows" else "java"
     args = [
         java_exe,
         "-jar",

@@ -1,4 +1,4 @@
-"""CLI: liteclaw-lsp analyze ..."""
+"""CLI: jdtls-lsp analyze ..."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from liteclaw_lsp.analyze import OPERATIONS, analyze_sync
+from jdtls_lsp.analyze import OPERATIONS, analyze_sync
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="liteclaw-lsp", description="JDTLS LSP wrapper (Python, LiteClaw-compatible)")
+    p = argparse.ArgumentParser(prog="jdtls-lsp", description="JDTLS LSP wrapper (Python, LiteClaw-compatible)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     ap = sub.add_parser("analyze", help="Run one Java LSP operation (like lsp_java_analyze)")
@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
         "--jdtls",
         type=Path,
         default=None,
-        help="JDTLS 安装目录，默认 ~/.liteclaw/jdtls 或环境变量 LITECLAW_JDTLS_PATH",
+        help="JDTLS 安装目录，默认 ./jdtls（当前目录）或环境变量 LITECLAW_JDTLS_PATH，最后回退 ~/jdtls",
     )
 
     args = p.parse_args(argv)

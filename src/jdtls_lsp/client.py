@@ -8,8 +8,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from liteclaw_lsp.jdtls import find_project_root, spawn_jdtls
-from liteclaw_lsp.jrpc import JsonRpcConnection
+from jdtls_lsp.jdtls import find_project_root, spawn_jdtls
+from jdtls_lsp.jrpc import JsonRpcConnection
 
 INIT_TIMEOUT_S = 45.0
 
