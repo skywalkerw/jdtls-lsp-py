@@ -5,14 +5,15 @@
 ## 依赖
 
 - Python 3.10+
-- Java 21+（优先使用当前目录 `./openjdk/bin/java`，否则使用 `PATH`/`JAVA_HOME` 中的 `java`）
+- Java 21+（优先使用安装包所在目录 `jdtls-lsp-py/openjdk/bin/java`，其次当前目录 `./openjdk/bin/java`，否则使用 `PATH`/`JAVA_HOME` 中的 `java`）
 - JDTLS 目录（需包含 `config_mac|config_linux|config_win` 和 `plugins/org.eclipse.equinox.launcher_*.jar`）
 
 JDTLS 默认查找优先级：
 
 1. `LITECLAW_JDTLS_PATH`
-2. 当前目录 `./jdtls`
-3. `~/jdtls`（兜底）
+2. 安装包所在项目目录 `jdtls-lsp-py/jdtls`
+3. 当前目录 `./jdtls`
+4. `~/jdtls`（兜底）
 
 ## 推荐初始化（含离线包）
 
@@ -32,6 +33,14 @@ jdtls-lsp analyze --help
 # 若回退到 .venv，可使用：
 ./.venv/bin/jdtls-lsp analyze --help
 ```
+
+### Windows
+
+- 在项目目录执行：`setup.bat`（与 `setup.sh` 流程一致，由 `scripts/setup_win.py` 实现）。
+- 离线 OpenJDK 包文件名需包含 `windows` 或 `win`（例如 `openjdk-26_windows-x64_bin.zip`）。
+- 全局安装失败时，虚拟环境入口为：`.venv\Scripts\jdtls-lsp.exe`。
+- 生成 portable zip：双击或执行 `export.bat`（与 `export.sh` 相同规则，均调用 `scripts/export_portable.py`）。
+- 若在 Git Bash / MSYS 下使用，也可执行 `./setup.sh`（已兼容 `.venv\Scripts\python.exe`）。
 
 ## 手动安装
 
@@ -129,8 +138,9 @@ java -version
 表示没有在默认位置找到 JDTLS，按以下顺序检查：
 
 1. 是否设置了 `LITECLAW_JDTLS_PATH`
-2. 当前目录下是否存在 `./jdtls`
-3. `~/jdtls` 是否存在
+2. 安装包所在项目目录下是否存在 `jdtls-lsp-py/jdtls`
+3. 当前目录下是否存在 `./jdtls`
+4. `~/jdtls` 是否存在
 
 目录必须至少包含：
 

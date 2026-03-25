@@ -50,5 +50,6 @@ description: >
   - JDTLS：`./jdtls`（若存在）
 - 常用执行方式：
   - `jdtls-lsp analyze ...`（全局安装成功时）
-  - `./.venv/bin/jdtls-lsp analyze ...`（setup 回退 venv 时）
-  - `PYTHONPATH=src python3 -m jdtls_lsp analyze ...`
+  - `./.venv/bin/jdtls-lsp analyze ...`（Unix 上 setup 回退 venv 时）
+  - `.venv\Scripts\jdtls-lsp.exe analyze ...`（Windows 上 venv 回退时）
+  - `PYTHONPATH=src python3 -m jdtls_lsp analyze ...`（不安装时；Windows 可用 `py -3 -m jdtls_lsp ...`）

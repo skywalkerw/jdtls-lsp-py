@@ -73,4 +73,4 @@ print(out)
 
 - Java 21+
 - JDTLS 目录可用（优先 `./jdtls`，其次 `LITECLAW_JDTLS_PATH`，最后 `~/jdtls`）
-- 推荐先执行 `./setup.sh` 完成离线 OpenJDK/JDTLS 初始化与 Python 安装（全局优先，失败回退 `.venv`）
+- 推荐先执行 `./setup.sh`（macOS/Linux）或 `setup.bat`（Windows）完成离线 OpenJDK/JDTLS 初始化与 Python 安装（全局优先，失败回退 `.venv`）

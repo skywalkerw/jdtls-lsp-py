@@ -48,7 +48,7 @@ class LSPClient:
     def open_file(self, path: str) -> None:
         """textDocument/didOpen or didChange (aligned with LiteClaw)."""
         file_path = path
-        if not (file_path.startswith("/") or (len(file_path) > 2 and file_path[1] == ":")):
+        if not Path(file_path).is_absolute():
             file_path = str(Path(self.root) / path)
         p = Path(file_path).resolve()
         ext = p.suffix.lower()

@@ -90,6 +90,18 @@ check_java_version() {
   log "Java 版本检查通过: ${raw}"
 }
 
+venv_python_exe() {
+  if [[ -f "${VENV_DIR}/Scripts/python.exe" ]]; then
+    echo "${VENV_DIR}/Scripts/python.exe"
+    return
+  fi
+  if [[ -x "${VENV_DIR}/bin/python" ]]; then
+    echo "${VENV_DIR}/bin/python"
+    return
+  fi
+  echo ""
+}
+
 install_python_package() {
   local py="$1"
   log "优先尝试全局安装: ${py} -m pip install -e ."
@@ -99,17 +111,26 @@ install_python_package() {
   fi
 
   warn "全局安装失败，回退到项目虚拟环境（常见原因：PEP 668 / externally-managed-environment）。"
-  local use_py="${py}"
-  if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+  local use_py
+  use_py="$(venv_python_exe)"
+  if [[ -z "${use_py}" ]]; then
     log "创建项目虚拟环境: ${VENV_DIR}"
     "${py}" -m venv "${VENV_DIR}"
+    use_py="$(venv_python_exe)"
   fi
-  use_py="${VENV_DIR}/bin/python"
+  if [[ -z "${use_py}" ]]; then
+    err "无法定位 venv 中的 Python，请检查 ${VENV_DIR}"
+    exit 1
+  fi
   log "虚拟环境安装: ${use_py} -m pip install -e ."
   "${use_py}" -m pip install --upgrade pip
   "${use_py}" -m pip install -e "${PROJECT_DIR}"
   log "Python 包安装完成（venv）。"
-  log "可执行: ${VENV_DIR}/bin/jdtls-lsp"
+  if [[ -f "${VENV_DIR}/Scripts/jdtls-lsp.exe" ]]; then
+    log "可执行: ${VENV_DIR}/Scripts/jdtls-lsp.exe"
+  else
+    log "可执行: ${VENV_DIR}/bin/jdtls-lsp"
+  fi
 }
 
 pick_jdtls_archive() {

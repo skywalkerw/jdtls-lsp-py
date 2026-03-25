@@ -45,10 +45,19 @@ def _parse_java_major(stderr: str) -> int | None:
     return int(head.group(1)) if head else None
 
 
+def _package_project_root() -> Path:
+    # .../src/jdtls_lsp/jdtls.py -> ... (project root)
+    return Path(__file__).resolve().parents[2]
+
+
 def _preferred_java_exe() -> str:
-    local_java = Path.cwd() / "openjdk" / "bin" / ("java.exe" if platform.system() == "Windows" else "java")
-    if local_java.exists():
-        return str(local_java)
+    java_name = "java.exe" if platform.system() == "Windows" else "java"
+    pkg_java = _package_project_root() / "openjdk" / "bin" / java_name
+    if pkg_java.exists():
+        return str(pkg_java)
+    cwd_java = Path.cwd() / "openjdk" / "bin" / java_name
+    if cwd_java.exists():
+        return str(cwd_java)
     return "java.exe" if platform.system() == "Windows" else "java"
 
 
@@ -74,6 +83,9 @@ def _default_jdtls_path() -> Path:
     env_path = os.environ.get("LITECLAW_JDTLS_PATH")
     if env_path:
         return Path(env_path)
+    pkg_path = _package_project_root() / "jdtls"
+    if pkg_path.exists():
+        return pkg_path
     local_path = Path.cwd() / "jdtls"
     if local_path.exists():
         return local_path
@@ -112,9 +124,11 @@ def spawn_jdtls(project_root: str, jdtls_path: Path | None = None) -> tuple[subp
     root = jdtls_path or _default_jdtls_path()
     launcher = _find_launcher_jar(root)
     if launcher is None:
-        raise RuntimeError(
-            f"JDTLS not found under {root}. Run setup.sh or install under ./jdtls (preferred) or ~/jdtls",
+        hint = (
+            "Run setup.sh / setup.bat or install JDTLS under the package directory jdtls/, "
+            "current ./jdtls, or user home jdtls/"
         )
+        raise RuntimeError(f"JDTLS not found under {root}. {hint}")
 
     config_name = _config_dir_name()
     config_file = root / config_name
