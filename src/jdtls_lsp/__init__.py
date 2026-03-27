@@ -1,3 +1,8 @@
 """Standalone JDTLS LSP client (aligned with LiteClaw lsp module)."""
 
+from jdtls_lsp.callchain import extract_top_entry_info, format_callchain_markdown
+from jdtls_lsp.logutil import setup_logging
+
 __version__ = "0.1.0"
+
+__all__ = ["__version__", "setup_logging", "format_callchain_markdown", "extract_top_entry_info"]

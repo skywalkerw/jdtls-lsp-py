@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from jdtls_lsp.client import LSPClient, create_client
+from jdtls_lsp.logutil import format_payload
+
+_log = logging.getLogger("jdtls_lsp.analyze")
 
 WORKSPACE_SYMBOL_WARMUP_S = 8.0
 
@@ -64,11 +68,26 @@ def analyze_sync(
     """
     op = operation.strip()
     if op not in OPERATIONS:
-        return f"错误: 未知操作 {operation}，支持 {', '.join(sorted(OPERATIONS))}"
+        msg = f"错误: 未知操作 {operation}，支持 {', '.join(sorted(OPERATIONS))}"
+        _log.warning("%s", msg)
+        return msg
 
     root_path = Path(project_path).resolve()
     if not root_path.exists():
-        return f"错误: 项目路径不存在 {project_path}"
+        msg = f"错误: 项目路径不存在 {project_path}"
+        _log.warning("%s", msg)
+        return msg
+
+    _log.info(
+        "analyze_sync operation=%s project=%s file=%s line=%s char=%s query=%s jdtls_path=%s",
+        op,
+        project_path,
+        file_path,
+        line,
+        character,
+        query,
+        jdtls_path,
+    )
 
     client = create_client(project_path, jdtls_path=jdtls_path)
     root = client.root
@@ -77,11 +96,15 @@ def analyze_sync(
         result: Any = None
         if op == "documentSymbol":
             if not file_path or not str(file_path).strip():
-                return "错误: documentSymbol 需要 file_path"
+                msg = "错误: documentSymbol 需要 file_path"
+                _log.warning("%s", msg)
+                return msg
             fp = str(file_path).strip()
             abs_path = (Path(root) / fp).resolve() if not Path(fp).is_absolute() else Path(fp).resolve()
             if not abs_path.exists() or abs_path.suffix.lower() != ".java":
-                return f"错误: 文件不存在或不是 .java 文件: {file_path}"
+                msg = f"错误: 文件不存在或不是 .java 文件: {file_path}"
+                _log.warning("%s", msg)
+                return msg
             client.open_file(str(abs_path))
             uri = abs_path.as_uri()
             result = client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
@@ -100,11 +123,15 @@ def analyze_sync(
             "outgoingCalls",
         ):
             if not file_path or not str(file_path).strip():
-                return f"错误: {op} 需要 file_path"
+                msg = f"错误: {op} 需要 file_path"
+                _log.warning("%s", msg)
+                return msg
             fp = str(file_path).strip()
             abs_path = (Path(root) / fp).resolve() if not Path(fp).is_absolute() else Path(fp).resolve()
             if not abs_path.exists():
-                return f"错误: 文件不存在: {file_path}"
+                msg = f"错误: 文件不存在: {file_path}"
+                _log.warning("%s", msg)
+                return msg
             ln = int(line) if line is not None else 1
             ch = int(character) if character is not None else 1
             line0 = max(0, ln - 1)
@@ -163,13 +190,19 @@ def analyze_sync(
                     result = _norm_list(calls)
 
         if isinstance(result, list) and len(result) == 0:
-            return f"无结果: {op}"
+            msg = f"无结果: {op}"
+            _log.info("%s", msg)
+            return msg
 
         text = json.dumps(result, ensure_ascii=False, indent=2)
 
         if op == "documentSymbol" and file_path:
-            return f"[file: {file_path}]\n{text}"
-        return text
+            out = f"[file: {file_path}]\n{text}"
+        else:
+            out = text
+        _log.info("analyze_sync result chars=%s", len(out))
+        _log.debug("analyze_sync result=%s", format_payload(out))
+        return out
     finally:
         client.shutdown()
 

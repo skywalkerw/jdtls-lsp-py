@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import re
@@ -9,6 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger("jdtls_lsp.jdtls")
 
 ROOT_MARKERS = ("pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath")
 
@@ -105,9 +108,15 @@ def _find_launcher_jar(jdtls_root: Path) -> Path | None:
 def _config_dir_name() -> str:
     system = platform.system()
     if system == "Darwin":
+        mach = platform.machine().lower()
+        if mach in ("arm64", "aarch64"):
+            return "config_mac_arm"
         return "config_mac"
     if system == "Windows":
         return "config_win"
+    mach = platform.machine().lower()
+    if mach in ("arm64", "aarch64"):
+        return "config_linux_arm"
     return "config_linux"
 
 
@@ -155,6 +164,15 @@ def spawn_jdtls(project_root: str, jdtls_path: Path | None = None) -> tuple[subp
         "--add-opens",
         "java.base/java.lang=ALL-UNNAMED",
     ]
+    _log.info(
+        "JDTLS spawn java=%s cwd=%s launcher=%s config=%s data=%s",
+        java_exe,
+        project_root,
+        launcher,
+        config_file,
+        data_dir,
+    )
+    _log.debug("JDTLS argv=%s", args)
     proc = subprocess.Popen(
         args,
         cwd=project_root,
@@ -165,4 +183,5 @@ def spawn_jdtls(project_root: str, jdtls_path: Path | None = None) -> tuple[subp
     )
     if proc.stdin is None or proc.stdout is None:
         raise RuntimeError("Failed to open JDTLS stdio pipes")
+    _log.info("JDTLS pid=%s", proc.pid)
     return proc, data_dir, launcher

@@ -3,3 +3,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Local JDTLS / JDK bundles (use LITECLAW_JDTLS_PATH or install separately)
+jdtls/
+openjdk/
+offline-packages/

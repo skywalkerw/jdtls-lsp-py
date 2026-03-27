@@ -75,6 +75,20 @@ jdtls-lsp analyze /path/to/project workspaceSymbol --query com.example.MyService
 # 引用（line/char 为 1-based）
 jdtls-lsp analyze /path/to/project references \
   --file src/main/java/com/example/App.java --line 10 --char 1
+
+# 调用链（给定类名+方法名，向上追到 REST 或 abstract 类）
+jdtls-lsp callchain /path/to/project \
+  --class com.example.service.OrderService \
+  --method createOrder \
+  --max-depth 20
+
+# 文件 + 行号（1-based，在该位置解析方法后追踪）
+jdtls-lsp callchain /path/to/project \
+  --file src/main/java/com/example/Foo.java --line 42
+
+# 关键字：仅方法名（依赖 workspace/symbol），或「类名.方法名」直接解析
+jdtls-lsp callchain /path/to/project --query createOrder
+jdtls-lsp callchain /path/to/project --query OrderServiceImpl.createOrder
 ```
 
 `operation` 支持：
@@ -89,6 +103,34 @@ jdtls-lsp analyze /path/to/project references \
 - `outgoingCalls`
 
 输出为完整 JSON（不做长度截断）。
+
+## 调用链追踪（callchain）
+
+`callchain` 子命令用于从某一方法出发**向上**追踪调用链，直到 REST 接口、abstract 类、无上游、环或达到 `max_depth`。
+
+**入口三选一**（互斥）：
+
+| 方式 | 参数 | 说明 |
+|------|------|------|
+| 类 + 方法 | `--class` 与 `--method` | 与原先相同；类名可为全限定或简单类名 |
+| 文件 + 位置 | `--file` 与 `--line`（可选 `--char`，默认 1） | 相对项目根或绝对路径的 `.java`；在该行解析所在方法后进入 call hierarchy |
+| 关键字 | `--query` | `workspace/symbol` 搜索（优先方法符号）；搜索词为**原样**（不做 `monitor_data`→`MonitorData` 等转换）；若只匹配到类/接口，则优先从 `*ServiceImpl` / `*Controller` 等类型中取「第一个方法」作为起点；若写成 `类名.方法名`，则直接按类+方法解析；若回退到 ***.java 全文搜索**且命中**多个不同文件**，则对每个文件各起一个调用链起点，并用线程池**并行**追踪（每文件独立 JDTLS 进程） |
+
+其他参数：
+
+- `project`：项目根目录或任意路径（会自动向上找 Maven/Gradle 根）
+- `--max-depth`：最大追踪深度（默认 20）
+- `--grep-workers`：仅关键字多文件 grep 时有效，并行 worker 数（默认 `min(8, 文件数)`；也可用环境变量 `JDTLS_LSP_GREP_WORKERS`）
+- `--format`：`markdown`（默认，含 ASCII 流程说明 + 每条链图示 + 末尾嵌入完整 JSON）或 `json`（仅 JSON）
+
+输出：
+
+- **Markdown**（默认）：含 `## 流程概览` 与每条链的 ASCII 图示，并在 `## 原始 JSON` 中附上完整 JSON（fenced `json`）
+- **JSON**（`--format json`）：与嵌入块中的结构一致
+- `chainCount`：链路数量（存在分支时会输出多条）
+- `chains[].chain`：从目标方法到上层调用方的完整路径
+- `chains[].stopReason`：停止原因（`rest_endpoint` / `abstract_class` / `no_incoming` / `cycle` / `max_depth`）
+- `chains[].topEntry`（可选）：当 `stopReason` 为 `no_incoming` 或 `rest_endpoint` 时，对**最上层**节点解析 Spring **类级 `@RequestMapping` + 方法级映射**，得到 `httpMethod`、`restPath`、`restSummary`、`classBasePath`，并提取方法上方 **JavaDoc**（`javadoc`）；非 Controller 或无法解析时字段可能缺失
 
 ## 作为库调用
 

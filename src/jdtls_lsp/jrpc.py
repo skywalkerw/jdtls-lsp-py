@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 from typing import Any, Callable
+
+from jdtls_lsp.logutil import format_payload, redact_lsp_params
+
+_log = logging.getLogger("jdtls_lsp.jrpc")
 
 
 def _write_message(stream: Any, obj: dict[str, Any]) -> None:
@@ -64,6 +69,9 @@ class JsonRpcConnection:
 
     def _dispatch_incoming(self, msg: dict[str, Any]) -> None:
         if "id" in msg and "method" in msg:
+            m = str(msg.get("method", ""))
+            p = msg.get("params")
+            _log.debug("LSP <- server request %s params=%s", m, format_payload(p))
             try:
                 result = self._on_request(msg)
             except Exception:
@@ -84,6 +92,8 @@ class JsonRpcConnection:
             return
 
     def send_request(self, method: str, params: dict[str, Any] | list[Any] | None = None, timeout: float = 120.0) -> Any:
+        safe = redact_lsp_params(method, params) if isinstance(params, dict) else params
+        _log.debug("LSP -> request %s params=%s", method, format_payload(safe))
         with self._lock:
             if self._closed:
                 raise RuntimeError("connection closed")
@@ -101,10 +111,15 @@ class JsonRpcConnection:
             self._pending.pop(req_id, None)
         if "error" in resp:
             err = resp["error"]
+            _log.warning("LSP request failed %s: %s", method, format_payload(err))
             raise RuntimeError(str(err))
-        return resp.get("result")
+        result = resp.get("result")
+        _log.debug("LSP -> %s result=%s", method, format_payload(result))
+        return result
 
     def send_notification(self, method: str, params: dict[str, Any] | list[Any] | None = None) -> None:
+        safe = redact_lsp_params(method, params) if isinstance(params, dict) else params
+        _log.debug("LSP -> notification %s params=%s", method, format_payload(safe))
         with self._lock:
             if self._closed:
                 return

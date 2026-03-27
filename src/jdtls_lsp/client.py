@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 import threading
@@ -10,8 +11,11 @@ from typing import Any
 
 from jdtls_lsp.jdtls import find_project_root, spawn_jdtls
 from jdtls_lsp.jrpc import JsonRpcConnection
+from jdtls_lsp.logutil import format_payload
 
-INIT_TIMEOUT_S = 45.0
+_log = logging.getLogger("jdtls_lsp.client")
+
+INIT_TIMEOUT_S = 120.0
 
 
 def _path_to_uri(path: str | Path) -> str:
@@ -113,6 +117,7 @@ class LSPClient:
 
 def create_client(project_path: str, jdtls_path: Path | None = None) -> LSPClient:
     root = str(find_project_root(project_path))
+    _log.info("LSP create_client project_path=%s resolved_root=%s jdtls_path=%s", project_path, root, jdtls_path)
     proc, data_dir, _ = spawn_jdtls(root, jdtls_path=jdtls_path)
     assert proc.stdout and proc.stdin
 
@@ -138,22 +143,21 @@ def create_client(project_path: str, jdtls_path: Path | None = None) -> LSPClien
     holder[0] = client
 
     pid = proc.pid
-    conn.send_request(
-        "initialize",
-        {
-            "rootUri": _path_to_uri(root),
-            "processId": pid,
-            "workspaceFolders": [{"name": "workspace", "uri": _path_to_uri(root)}],
-            "capabilities": {
-                "window": {"workDoneProgress": True},
-                "workspace": {"configuration": True, "didChangeWatchedFiles": {"dynamicRegistration": True}},
-                "textDocument": {
-                    "synchronization": {"didOpen": True, "didChange": True},
-                    "publishDiagnostics": {"versionSupport": True},
-                },
+    init_params = {
+        "rootUri": _path_to_uri(root),
+        "processId": pid,
+        "workspaceFolders": [{"name": "workspace", "uri": _path_to_uri(root)}],
+        "capabilities": {
+            "window": {"workDoneProgress": True},
+            "workspace": {"configuration": True, "didChangeWatchedFiles": {"dynamicRegistration": True}},
+            "textDocument": {
+                "synchronization": {"didOpen": True, "didChange": True},
+                "publishDiagnostics": {"versionSupport": True},
             },
         },
-        timeout=INIT_TIMEOUT_S,
-    )
+    }
+    _log.debug("LSP initialize params=%s", format_payload(init_params))
+    conn.send_request("initialize", init_params, timeout=INIT_TIMEOUT_S)
     conn.send_notification("initialized", {})
+    _log.info("LSP initialized, client root=%s", root)
     return client
