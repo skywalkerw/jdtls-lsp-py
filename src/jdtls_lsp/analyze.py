@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from jdtls_lsp.client import LSPClient, create_client
+from jdtls_lsp.java_grep import keyword_search_variants
 from jdtls_lsp.logutil import format_payload
 
 _log = logging.getLogger("jdtls_lsp.analyze")
@@ -50,6 +51,29 @@ def _workspace_symbol_with_retry(client: LSPClient, query: str) -> list[Any]:
         time.sleep(WORKSPACE_SYMBOL_WARMUP_S)
         out = search()
     return out
+
+
+def _merge_workspace_symbol_queries(client: LSPClient, query: str) -> list[Any]:
+    """Multiple ``|`` / ``｜``-separated needles; merge ``workspace/symbol`` results with dedupe."""
+    variants = keyword_search_variants(query)
+    if not variants:
+        return []
+    seen: set[tuple[Any, ...]] = set()
+    merged: list[Any] = []
+    for v in variants:
+        for s in _workspace_symbol_with_retry(client, v):
+            if not isinstance(s, dict):
+                continue
+            loc = s.get("location") or {}
+            uri = loc.get("uri", "") if isinstance(loc, dict) else ""
+            rng = loc.get("range") or {} if isinstance(loc, dict) else {}
+            st = rng.get("start") or {} if isinstance(rng, dict) else {}
+            key = (uri, str(s.get("name")), int(s.get("kind", 0)), int(st.get("line", -1)))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(s)
+    return merged[:20]
 
 
 def analyze_sync(
@@ -112,7 +136,7 @@ def analyze_sync(
 
         elif op == "workspaceSymbol":
             q = (query or "").strip()
-            result = _workspace_symbol_with_retry(client, q)
+            result = _merge_workspace_symbol_queries(client, q)
 
         elif op in (
             "definition",

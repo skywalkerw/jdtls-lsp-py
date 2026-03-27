@@ -38,7 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--file", "-f", dest="file", help="相对项目根的 .java 路径（documentSymbol / definition 等）")
     ap.add_argument("--line", "-l", type=int, help="行号 1-based")
     ap.add_argument("--char", "-c", type=int, help="列号 1-based")
-    ap.add_argument("--query", "-q", help="workspaceSymbol 查询字符串")
+    ap.add_argument(
+        "--query",
+        "-q",
+        help="workspaceSymbol 查询；可用 | 或 ｜ 拼接多个子串合并结果",
+    )
     ap.add_argument(
         "--jdtls",
         type=Path,
@@ -91,14 +95,31 @@ def main(argv: list[str] | None = None) -> int:
         "-q",
         dest="symbol_query",
         default=None,
-        help="workspace/symbol 关键字，解析到方法后作为起点（与 --class/--method、--file/--line 互斥）",
+        help="workspace/symbol 关键字；可用 | 或 ｜ 拼接多个子串一次性搜索（与 --class/--method、--file/--line 互斥）",
     )
     cp.add_argument("--max-depth", type=int, default=20, help="向上追踪最大深度，默认 20")
     cp.add_argument(
         "--grep-workers",
         type=int,
         default=None,
-        help="关键字命中多文件时并行分析线程数（默认 min(8, 文件数)，可用环境变量 JDTLS_LSP_GREP_WORKERS）",
+        help="兼容保留；多入口在单 LSP 上串行追踪，本参数不改变调度（可用环境变量 JDTLS_LSP_GREP_WORKERS）",
+    )
+    cp.add_argument(
+        "--grep-skip-interface",
+        action="store_true",
+        help="关键字 java_text_grep：跳过 interface 源文件中的命中（仅 *.java 顶层 interface 与文件名一致）",
+    )
+    cp.add_argument(
+        "--grep-skip-rest-entry",
+        action="store_true",
+        help="关键字 java_text_grep：跳过起点本身已是 REST 的方法（多为 Controller 入口）",
+    )
+    cp.add_argument(
+        "--grep-max-entry-points",
+        type=int,
+        default=None,
+        metavar="N",
+        help="关键字 java_text_grep：最多保留 N 个起点（先按实现类优先排序再截断）",
     )
     cp.add_argument(
         "--format",
@@ -147,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
             max_depth=args.max_depth,
             output_format=args.output_format,
             grep_parallel_workers=args.grep_workers,
+            grep_skip_interface=args.grep_skip_interface,
+            grep_skip_rest=args.grep_skip_rest_entry,
+            grep_max_entry_points=args.grep_max_entry_points,
         )
     else:
         return 1

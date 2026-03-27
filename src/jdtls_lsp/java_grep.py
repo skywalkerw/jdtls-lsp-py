@@ -29,14 +29,20 @@ SKIP_DIR_PARTS = frozenset(
 
 # Method-like line after a grep hit (annotation/string) to try LSP resolution.
 METH_LIKE_LINE = re.compile(r"^\s*(public|private|protected|static)\s+.+\([^)]*\)")
+# ASCII | or fullwidth ｜ — multiple needles in one query string.
+_MULTI_KEYWORD_SPLIT = re.compile(r"[|｜]")
 
 
 def keyword_search_variants(q: str) -> list[str]:
-    """Normalize query to search needles: trimmed original only (no case/identifier transforms)."""
+    """Split on ``|`` or ``｜``, trim each part, dedupe (order preserved). No other transforms."""
     q = q.strip()
     if not q:
         return []
-    return [q]
+    parts = [p.strip() for p in _MULTI_KEYWORD_SPLIT.split(q)]
+    parts = [p for p in parts if p]
+    if not parts:
+        return []
+    return list(dict.fromkeys(parts))
 
 
 def line_matches_text_needles(line: str, needles: list[str]) -> bool:

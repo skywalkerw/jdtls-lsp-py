@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
@@ -289,12 +288,84 @@ def _names_from_hierarchy_item(item: dict[str, Any]) -> tuple[str, str]:
     return class_name, method_simple
 
 
+def _java_file_declares_interface_matching_stem(path: Path) -> bool:
+    """若编译单元顶层声明 ``interface <文件名>``（与 ``.java`` 主类名一致），视为接口文件。"""
+    stem = path.stem
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(re.search(rf"\binterface\s+{re.escape(stem)}\b", text))
+
+
+def _grep_entry_tier(em: dict[str, Any]) -> int:
+    """越小越优先：实现类 > Controller > 其它。"""
+    f = str(em.get("file", ""))
+    if "ServiceImpl" in f or "Impl.java" in f or "/impl/" in f.replace("\\", "/").lower():
+        return 0
+    if "Controller" in f:
+        return 2
+    if "Repository" in f:
+        return 3
+    return 4
+
+
+def _apply_grep_entry_filters(
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    root: Path,
+    *,
+    skip_interface: bool,
+    skip_rest: bool,
+    max_entry_points: int | None,
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], dict[str, Any]]:
+    """过滤 grep 起点；排序后截断 ``max_entry_points``。"""
+    extra: dict[str, Any] = {}
+    out = list(pairs)
+    if skip_interface:
+        before = len(out)
+        kept: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for em, item in out:
+            rel = str(em.get("file", ""))
+            abs_p = Path(rel).resolve() if Path(rel).is_absolute() else (root / rel).resolve()
+            if _java_file_declares_interface_matching_stem(abs_p):
+                continue
+            kept.append((em, item))
+        out = kept
+        extra["grepSkippedInterfaceEntries"] = before - len(out)
+    if skip_rest:
+        before = len(out)
+        kept = []
+        for em, item in out:
+            node = _node_from_item(item, root)
+            if node.get("isRest"):
+                continue
+            kept.append((em, item))
+        out = kept
+        extra["grepSkippedRestEntrypoints"] = before - len(out)
+    out.sort(key=lambda p: (_grep_entry_tier(p[0]), str(p[0].get("file", ""))))
+    if max_entry_points is not None and max_entry_points > 0 and len(out) > max_entry_points:
+        extra["grepEntryPointsBeforeCap"] = len(out)
+        out = out[:max_entry_points]
+        extra["grepMaxEntryPoints"] = max_entry_points
+    return out, extra
+
+
 def _collect_java_grep_entries(
-    client: LSPClient, root: Path, query: str
+    client: LSPClient,
+    root: Path,
+    query: str,
+    *,
+    multi_needle: bool = False,
+    grep_skip_interface: bool = False,
+    grep_skip_rest: bool = False,
+    grep_max_entry_points: int | None = None,
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], dict[str, Any]]:
     """
-    workspace/symbol 无结果时的回退：在 *.java 中全文搜索，每个**不同文件**至多保留一个解析成功的起点
-    ``(entry_meta, hierarchy_item)``。
+    在 *.java 中全文搜索 needles，对每个 grep 命中尝试解析 call hierarchy 起点。
+
+    - **单关键字**（默认）：每个**文件**至多一个起点（先命中先得分）。
+    - **多关键字**（``multi_needle=True``）：跳过「每文件只取一个」，按解析后的
+      ``(file, methodLine)`` 去重，同一文件内多个命中可产生多个起点；处理更多 grep 行。
     """
     needles = keyword_search_variants(query)
     if not needles:
@@ -303,18 +374,25 @@ def _collect_java_grep_entries(
     if not hits:
         return [], {}
     sort_grep_hits_by_score(hits)
-    common: dict[str, Any] = {"keywordResolution": "java_text_grep", "grepNeedles": needles}
+    common: dict[str, Any] = {
+        "keywordResolution": "java_text_grep",
+        "grepNeedles": needles,
+    }
+    if multi_needle:
+        common["grepMultiNeedle"] = True
     pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     seen_files: set[str] = set()
+    seen_method_loc: set[tuple[str, int]] = set()
+    max_hits = 200 if multi_needle else 40
 
-    for abs_path, grep_line_no, line_text in hits[:40]:
+    for abs_path, grep_line_no, line_text in hits[:max_hits]:
         if not abs_path.is_file():
             continue
         try:
             rel = str(abs_path.relative_to(root))
         except ValueError:
             rel = str(abs_path)
-        if rel in seen_files:
+        if not multi_needle and rel in seen_files:
             continue
         try:
             file_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -330,6 +408,11 @@ def _collect_java_grep_entries(
             if item is None:
                 continue
             line1, char1 = _hierarchy_item_position_1based(item)
+            loc_key = (rel, line1)
+            if multi_needle:
+                if loc_key in seen_method_loc:
+                    break
+                seen_method_loc.add(loc_key)
             cname, mname = _names_from_hierarchy_item(item)
             em: dict[str, Any] = {
                 "file": rel,
@@ -343,9 +426,27 @@ def _collect_java_grep_entries(
             if ln != grep_line_no:
                 em["lineAdjustFromGrepHit"] = ln - grep_line_no
             pairs.append((em, item))
-            seen_files.add(rel)
+            if not multi_needle:
+                seen_files.add(rel)
             _log.info("keyword grep resolved %s:%s (grep hit line %s)", rel, line1, grep_line_no)
             break
+
+    if grep_skip_interface or grep_skip_rest or (
+        grep_max_entry_points is not None and grep_max_entry_points > 0
+    ):
+        pairs, filt_extra = _apply_grep_entry_filters(
+            pairs,
+            root,
+            skip_interface=grep_skip_interface,
+            skip_rest=grep_skip_rest,
+            max_entry_points=grep_max_entry_points,
+        )
+        common.update(filt_extra)
+        common["grepEntryFilters"] = {
+            "skipInterfaceFiles": grep_skip_interface,
+            "skipRestEntrypoints": grep_skip_rest,
+            "maxEntryPoints": grep_max_entry_points,
+        }
 
     return pairs, common
 
@@ -365,26 +466,27 @@ def _effective_grep_workers(n_entries: int, explicit: int | None) -> int:
 
 
 def _trace_java_grep_entries_parallel(
-    project_path: str,
-    jdtls_path: Path | None,
+    client: LSPClient,
+    root: Path,
     entries: list[dict[str, Any]],
     max_depth: int,
     max_workers: int,
 ) -> list[dict[str, Any]]:
-    """每个入口独立 JDTLS 进程 + LSP 客户端，线程池并行向上追踪。"""
-    if not entries:
-        return []
+    """
+    多入口依次向上追踪；**共用**已 ``initialize`` 的 ``client``。
 
-    def run_one(entry: dict[str, Any]) -> list[dict[str, Any]]:
-        client: LSPClient | None = None
+    同一 JDTLS 连接上 **并发** ``callHierarchy/incomingCalls`` 易触发服务端 NPE/内部错误，
+    故在单连接模式下 **串行** 处理各入口（``max_workers`` 保留兼容，不参与调度）。
+    """
+    _ = max_workers  # API 兼容；单 LSP 时串行追踪，不使用 worker 数
+    merged: list[dict[str, Any]] = []
+    for entry in entries:
         try:
-            client = create_client(project_path, jdtls_path=jdtls_path)
-            root = Path(client.root).resolve()
             rel = str(entry["file"])
             abs_path = (root / rel).resolve() if not Path(rel).is_absolute() else Path(rel).resolve()
             if not abs_path.is_file():
-                _log.warning("grep parallel: missing file %s", abs_path)
-                return []
+                _log.warning("grep multi-entry: missing file %s", abs_path)
+                continue
             client.open_file(str(abs_path))
             uri = abs_path.as_uri()
             ln = int(entry["line"])
@@ -393,8 +495,8 @@ def _trace_java_grep_entries_parallel(
                 client, uri, max(0, ln - 1), max(0, ch - 1)
             )
             if item is None:
-                _log.warning("grep parallel: no call hierarchy at %s:%s", rel, ln)
-                return []
+                _log.warning("grep multi-entry: no call hierarchy at %s:%s", rel, ln)
+                continue
             chains: list[dict[str, Any]] = []
             _trace_up_all(
                 client=client,
@@ -411,20 +513,9 @@ def _trace_java_grep_entries_parallel(
                 chn["grepSourceLine"] = ln
                 chn["grepEntryClass"] = entry.get("className")
                 chn["grepEntryMethod"] = entry.get("methodName")
-            return chains
+            merged.extend(chains)
         except Exception:
-            _log.exception("grep parallel trace failed for %s", entry.get("file"))
-            return []
-        finally:
-            if client is not None:
-                client.shutdown()
-
-    workers = max(1, min(max_workers, len(entries)))
-    merged: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = [pool.submit(run_one, e) for e in entries]
-        for fut in futs:
-            merged.extend(fut.result())
+            _log.exception("grep multi-entry trace failed for %s", entry.get("file"))
     return merged
 
 
@@ -488,17 +579,45 @@ def _hierarchy_from_first_method_in_class_file(client: LSPClient, class_sym: dic
 
 
 def _resolve_item_from_keyword(
-    client: LSPClient, query: str, root: Path
+    client: LSPClient,
+    query: str,
+    root: Path,
+    *,
+    grep_skip_interface: bool = False,
+    grep_skip_rest: bool = False,
+    grep_max_entry_points: int | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """
     解析关键字 → call hierarchy item。
-    顺序：workspace/symbol（含变体）→ 类符号回退取首方法 → 项目内 *.java 全文搜索命中行。
-    返回 (item, extra_meta)，extra_meta 可能含 keywordResolution / grep 字段。
+    顺序（**单关键字**）：workspace/symbol（含变体）→ 类符号回退取首方法 → 项目内 *.java 全文搜索。
+
+    **多关键字**（``|`` / ``｜`` 拆分后多于一段）：不走 workspace/类回退，直接全文 grep，
+    合并各 needle 命中并按「每文件一条」或「多 needle 时每方法一条」收集起点。
+
+    **grep_***：仅影响 ``java_text_grep`` 收集的起点（见 ``_collect_java_grep_entries``）。
     """
     q = query.strip()
     if not q:
         return None, {}
     variants = keyword_search_variants(q)
+    multi_needle = len(variants) > 1
+
+    _grep_kw = dict(
+        grep_skip_interface=grep_skip_interface,
+        grep_skip_rest=grep_skip_rest,
+        grep_max_entry_points=grep_max_entry_points,
+    )
+
+    if multi_needle:
+        pairs, grep_common = _collect_java_grep_entries(client, root, q, multi_needle=True, **_grep_kw)
+        if not pairs:
+            return None, {}
+        if len(pairs) == 1:
+            em, item = pairs[0]
+            return item, {**grep_common, **em}
+        entries_meta = [p[0] for p in pairs]
+        return None, {**grep_common, "javaGrepMultiFile": True, "javaGrepEntries": entries_meta}
+
     syms = _merge_workspace_symbols(client, variants, limit=200)
     methods = [s for s in syms if isinstance(s, dict) and int(s.get("kind", 0)) == 6]
     if not methods:
@@ -507,18 +626,21 @@ def _resolve_item_from_keyword(
             for s in syms
             if isinstance(s, dict)
             and int(s.get("kind", 0)) == 6
-            and q.lower() in str(s.get("name", "")).lower()
+            and any(v.lower() in str(s.get("name", "")).lower() for v in variants)
         ]
 
     def sort_key(s: dict[str, Any]) -> tuple[int, int]:
         name = str(s.get("name", ""))
         simple = name.split("(")[0].strip()
-        if simple == q:
-            return (0, 0)
-        if name.startswith(f"{q}("):
-            return (1, 0)
-        if q.lower() in simple.lower():
-            return (2, len(simple))
+        for v in variants:
+            if simple == v:
+                return (0, 0)
+        for v in variants:
+            if name.startswith(f"{v}("):
+                return (1, 0)
+        for v in variants:
+            if v.lower() in simple.lower():
+                return (2, len(simple))
         return (3, len(simple))
 
     methods.sort(key=sort_key)
@@ -538,13 +660,13 @@ def _resolve_item_from_keyword(
             if item is not None:
                 return item, {"keywordResolution": "workspace_symbol"}
 
-    # 仅有类/接口：用关键字子串匹配符号名，再取该类第一个方法
-    needle = q
-    needle_l = needle.lower()
+    # 仅有类/接口：用任一关键字子串匹配符号名，再取该类第一个方法
     classes = [
         s
         for s in syms
-        if isinstance(s, dict) and int(s.get("kind", 0)) in (5, 11) and needle_l in str(s.get("name", "")).lower()
+        if isinstance(s, dict)
+        and int(s.get("kind", 0)) in (5, 11)
+        and any(v.lower() in str(s.get("name", "")).lower() for v in variants)
     ]
 
     def _class_fallback_key(s: dict[str, Any]) -> tuple[int, int]:
@@ -565,7 +687,7 @@ def _resolve_item_from_keyword(
         if item is not None:
             return item, {"keywordResolution": "workspace_class_first_method"}
 
-    pairs, grep_common = _collect_java_grep_entries(client, root, q)
+    pairs, grep_common = _collect_java_grep_entries(client, root, q, multi_needle=False, **_grep_kw)
     if not pairs:
         return None, {}
     if len(pairs) == 1:
@@ -604,6 +726,82 @@ def _is_abstract_class(file_path: Path, line0: int) -> bool:
 
 def _node_key(node: dict[str, Any]) -> str:
     return f"{node.get('file')}:{node.get('line')}:{node.get('character')}:{node.get('method')}"
+
+
+def _item_selection_key(item: dict[str, Any]) -> tuple[str, int, int]:
+    uri = str(item.get("uri", ""))
+    sel = item.get("selectionRange") or {}
+    st = sel.get("start") if isinstance(sel, dict) else {}
+    if not isinstance(st, dict):
+        return (uri, -1, -1)
+    return (uri, int(st.get("line", 0)), int(st.get("character", 0)))
+
+
+def _refresh_hierarchy_item(client: LSPClient, item: dict[str, Any]) -> dict[str, Any] | None:
+    """Re-run prepareCallHierarchy at the item's selection start (stabilizes LSP item for incomingCalls)."""
+    uri = item.get("uri")
+    if not isinstance(uri, str):
+        return None
+    sel = item.get("selectionRange")
+    if not isinstance(sel, dict):
+        return None
+    st = sel.get("start")
+    if not isinstance(st, dict):
+        return None
+    line0 = int(st.get("line", 0))
+    char0 = int(st.get("character", 0))
+    return _prepare_item(client, uri, line0, char0)
+
+
+def _incoming_calls_candidates(client: LSPClient, item: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    JDTLS sometimes NPEs on callHierarchy/incomingCalls for the raw ``from`` item.
+    Try the item as-is, a fresh prepareCallHierarchy at the same anchor, then small column nudges.
+    """
+    uri = item.get("uri")
+    if not isinstance(uri, str):
+        return [item]
+
+    seen: set[tuple[str, int, int]] = set()
+    out: list[dict[str, Any]] = []
+
+    def add(it: dict[str, Any]) -> None:
+        k = _item_selection_key(it)
+        if k in seen:
+            return
+        seen.add(k)
+        out.append(it)
+
+    add(item)
+    ref = _refresh_hierarchy_item(client, item)
+    if ref is not None:
+        add(ref)
+
+    sel = item.get("selectionRange")
+    if isinstance(sel, dict):
+        st = sel.get("start")
+        if isinstance(st, dict):
+            line0 = int(st.get("line", 0))
+            char0 = int(st.get("character", 0))
+            for delta in (0, 1, -1, 2, -2, 3, -3, 4, 5):
+                prep = _prepare_item(client, uri, line0, max(0, char0 + delta))
+                if prep is not None:
+                    add(prep)
+
+    return out if out else [item]
+
+
+def _incoming_calls_with_retry(client: LSPClient, item: dict[str, Any]) -> Any:
+    last_err: RuntimeError | None = None
+    for cand in _incoming_calls_candidates(client, item):
+        try:
+            return client.request("callHierarchy/incomingCalls", {"item": cand})
+        except RuntimeError as e:
+            last_err = e
+            _log.debug("incomingCalls retry: %s", e)
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("incomingCalls: no candidates")
 
 
 def _node_from_item(item: dict[str, Any], root: Path, default_class: str | None = None) -> dict[str, Any]:
@@ -666,7 +864,18 @@ def _trace_up_all(
         out_chains.append({"chain": chain, "stopReason": "max_depth"})
         return
 
-    calls = client.request("callHierarchy/incomingCalls", {"item": item})
+    try:
+        calls = _incoming_calls_with_retry(client, item)
+    except RuntimeError as e:
+        _log.warning("callHierarchy/incomingCalls failed at %s: %s", key, e)
+        out_chains.append(
+            {
+                "chain": chain,
+                "stopReason": "jdtls_error",
+                "jdtlsError": str(e)[:1200],
+            }
+        )
+        return
     arr = [x for x in _norm_list(calls) if isinstance(x, dict)]
     if not arr:
         out_chains.append({"chain": chain, "stopReason": "no_incoming"})
@@ -700,6 +909,7 @@ _STOP_REASON_LABEL: dict[str, str] = {
     "max_depth": "达到 max_depth",
     "no_incoming": "无上游调用（LSP incomingCalls 为空）",
     "cycle": "检测到调用环",
+    "jdtls_error": "JDTLS incomingCalls 内部错误（常见为 NPE，链到此为止）",
 }
 
 
@@ -995,10 +1205,25 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
             gn = q.get("grepNeedles")
             if isinstance(gn, list) and gn:
                 query_lines.append(f"- **全文搜索 needles**: `{gn}`")
+            gf = q.get("grepEntryFilters")
+            if isinstance(gf, dict) and gf:
+                if gf.get("skipInterfaceFiles"):
+                    query_lines.append("- **grep 起点过滤**: 跳过「顶层为 interface」的源文件")
+                if gf.get("skipRestEntrypoints"):
+                    query_lines.append("- **grep 起点过滤**: 跳过起点已是 REST 的方法")
+                if gf.get("maxEntryPoints") is not None:
+                    query_lines.append(f"- **grep 起点上限**: 最多 `{gf.get('maxEntryPoints')}` 条（按实现类优先排序后截断）")
             if q.get("javaGrepMultiFile"):
                 jge = q.get("javaGrepEntries")
                 if isinstance(jge, list) and jge:
-                    query_lines.append(f"- **多文件并行**: `{len(jge)}` 个起点，workers=`{q.get('javaGrepParallelWorkers', '')}`")
+                    if q.get("javaGrepTraceSequential"):
+                        query_lines.append(
+                            f"- **多入口串行追踪**: `{len(jge)}` 个起点（单 LSP / 单 JDTLS，避免并发 incomingCalls）"
+                        )
+                    else:
+                        query_lines.append(
+                            f"- **多入口**: `{len(jge)}` 个起点，workers=`{q.get('javaGrepParallelWorkers', '')}`"
+                        )
                     for i, ent in enumerate(jge[:24]):
                         if not isinstance(ent, dict):
                             continue
@@ -1063,6 +1288,12 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
         lines.append(_ascii_tree_for_chain([x for x in nodes if isinstance(x, dict)]))
         lines.append("```")
         lines.append("")
+        je = ch.get("jdtlsError")
+        if isinstance(je, str) and je.strip() and sr == "jdtls_error":
+            lines.append("#### JDTLS 错误（incomingCalls）")
+            lines.append("")
+            lines.append(f"```\n{je.strip()[:900]}\n```")
+            lines.append("")
         te = ch.get("topEntry")
         if isinstance(te, dict) and te:
             lines.append("#### 最上层入口（REST / 注释）")
@@ -1134,14 +1365,18 @@ def trace_call_chain_sync(
     max_depth: int = MAX_DEPTH_DEFAULT,
     output_format: Literal["json", "markdown"] = "json",
     grep_parallel_workers: int | None = None,
+    grep_skip_interface: bool = False,
+    grep_skip_rest: bool = False,
+    grep_max_entry_points: int | None = None,
 ) -> str:
     """
     向上追踪调用链。入口三选一：
     - **类名 + 方法名**（与原先相同）
     - **file_path + line**（相对项目根或绝对路径的 .java，行号 1-based，可选 character 1-based）
-    - **symbol_query**（workspace/symbol 关键字，优先匹配方法符号；全文 grep 多文件时并行追踪）
+    - **symbol_query**（workspace/symbol 关键字，优先匹配方法符号；全文 grep 多入口时串行追踪）
 
-    ``grep_parallel_workers``：关键字命中多个 *.java 文件时的并行度；默认见 ``_effective_grep_workers``。
+    ``grep_skip_interface`` / ``grep_skip_rest`` / ``grep_max_entry_points``：仅作用于关键字回退到
+    ``java_text_grep`` 时的起点列表（见 README）。
     """
     root_path = Path(project_path).resolve()
     if not root_path.exists():
@@ -1154,9 +1389,10 @@ def trace_call_chain_sync(
     has_q = bool(symbol_query and str(symbol_query).strip())
 
     # 「全限定或简单类名.方法名」形式的单关键字 → 按类+方法解析（不依赖 workspace/symbol）
+    # 含 ``|`` / ``｜`` 时视为多关键字，不走本分支
     if has_q and not has_cm and not has_fl:
         sq0 = str(symbol_query).strip()
-        if "." in sq0:
+        if "|" not in sq0 and "｜" not in sq0 and "." in sq0:
             left, right = sq0.rsplit(".", 1)
             if left and right and re.match(r"^[A-Za-z_]\w*$", right):
                 class_name = left
@@ -1283,28 +1519,31 @@ def trace_call_chain_sync(
 
         else:
             item, kw_extra = _resolve_item_from_keyword(
-                client, symbol_query.strip() if symbol_query else "", root
+                client,
+                symbol_query.strip() if symbol_query else "",
+                root,
+                grep_skip_interface=grep_skip_interface,
+                grep_skip_rest=grep_skip_rest,
+                grep_max_entry_points=grep_max_entry_points,
             )
             if kw_extra.get("javaGrepMultiFile"):
                 entries = kw_extra.get("javaGrepEntries")
                 if not isinstance(entries, list) or not entries:
-                    msg = f"错误: 关键字「{symbol_query.strip()}」grep 多文件入口为空"
+                    msg = (
+                        f"错误: 关键字「{symbol_query.strip()}」grep 多入口在过滤后为空"
+                        "（可放宽 --grep-skip-interface / --grep-skip-rest 或增大 --grep-max-entry-points）"
+                    )
                     _log.warning("%s", msg)
                     return msg
                 w = _effective_grep_workers(len(entries), grep_parallel_workers)
                 _log.info(
-                    "keyword java_text_grep multi-file: %s distinct files, parallel workers=%s",
+                    "keyword java_text_grep multi-file: %s entries, sequential trace (shared LSP)",
                     len(entries),
-                    w,
                 )
-                try:
-                    client.shutdown()
-                except Exception:
-                    pass
-                client = None
+                assert client is not None
                 chains = _trace_java_grep_entries_parallel(
-                    project_path=str(root_path),
-                    jdtls_path=jdtls_path,
+                    client,
+                    root,
                     entries=[e for e in entries if isinstance(e, dict)],
                     max_depth=max_depth,
                     max_workers=w,
@@ -1315,6 +1554,7 @@ def trace_call_chain_sync(
                     "className": "(multiple files)",
                     "methodName": "(multiple)",
                     "javaGrepParallelWorkers": w,
+                    "javaGrepTraceSequential": True,
                 }
                 query_meta.update(kw_extra)
                 out = _finalize_callchains(root, chains, query_meta, output_format)
@@ -1329,7 +1569,8 @@ def trace_call_chain_sync(
                 msg = (
                     f"错误: 关键字「{symbol_query.strip()}」未解析到可调用的方法符号"
                     "（workspace 索引、类回退与 *.java 全文搜索均无可用位置；"
-                    "请尝试更具体的关键字，或使用 --class/--method 或 --file/--line）"
+                    "若使用了 grep 起点过滤，可放宽 --grep-skip-interface / --grep-skip-rest；"
+                    "或尝试更具体的关键字，或使用 --class/--method 或 --file/--line）"
                 )
                 _log.warning("%s", msg)
                 return msg
