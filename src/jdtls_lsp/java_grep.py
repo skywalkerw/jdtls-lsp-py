@@ -1,6 +1,6 @@
 """Search ``*.java`` under a project tree by plain-text needles (ripgrep or Python fallback).
 
-Reusable by ``callchain`` and future CLI commands; no LSP dependency.
+Reusable by ``callchain-up`` / CLI ``java-grep``; no LSP dependency.
 """
 
 from __future__ import annotations
@@ -16,12 +16,14 @@ __all__ = [
     "grep_java_keyword_hits",
     "sort_grep_hits_by_score",
     "scan_method_line_candidates",
+    "java_grep_report",
 ]
 
 import json
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 SKIP_DIR_PARTS = frozenset(
     {"target", "build", ".git", "node_modules", "dist", "out", ".gradle"}
@@ -160,6 +162,57 @@ def grep_java_keyword_hits(project_root: Path, needles: list[str]) -> list[tuple
     if rg:
         return rg
     return grep_java_walk(project_root, needles)
+
+
+def _rel_under_root(path: Path, root: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(root.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def java_grep_report(
+    project_root: Path,
+    query: str,
+    *,
+    sort_by_score: bool = True,
+    max_hits: int = 200,
+) -> dict[str, Any]:
+    """
+    在 ``project_root`` 下搜索 ``*.java`` 中与 ``query`` 匹配的文本行（``|`` / ``｜`` 拆成多 needle，与 callchain-up 一致）。
+
+    返回结构化字典，供 CLI ``java-grep --format json`` 或脚本直接使用。
+    """
+    root = project_root.resolve()
+    needles = keyword_search_variants(query)
+    if not needles:
+        return {
+            "projectRoot": str(root),
+            "needles": [],
+            "hitCount": 0,
+            "hits": [],
+        }
+    hits = grep_java_keyword_hits(root, needles)
+    if sort_by_score:
+        sort_grep_hits_by_score(hits)
+    cap = max(0, max_hits)
+    hits = hits[:cap]
+    rows: list[dict[str, Any]] = []
+    for p, line_no, line_text in hits:
+        rows.append(
+            {
+                "file": _rel_under_root(p, root),
+                "line": line_no,
+                "text": line_text,
+                "score": score_grep_hit(p, line_text),
+            }
+        )
+    return {
+        "projectRoot": str(root),
+        "needles": needles,
+        "hitCount": len(rows),
+        "hits": rows,
+    }
 
 
 def sort_grep_hits_by_score(hits: list[tuple[Path, int, str]]) -> None:

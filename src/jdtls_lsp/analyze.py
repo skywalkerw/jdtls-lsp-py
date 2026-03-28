@@ -26,6 +26,7 @@ OPERATIONS = frozenset(
         "implementation",
         "incomingCalls",
         "outgoingCalls",
+        "typeHierarchy",
     }
 )
 
@@ -145,6 +146,7 @@ def analyze_sync(
             "implementation",
             "incomingCalls",
             "outgoingCalls",
+            "typeHierarchy",
         ):
             if not file_path or not str(file_path).strip():
                 msg = f"错误: {op} 需要 file_path"
@@ -212,6 +214,23 @@ def analyze_sync(
                 else:
                     calls = client.request("callHierarchy/outgoingCalls", {"item": arr[0]})
                     result = _norm_list(calls)
+            elif op == "typeHierarchy":
+                items = client.request(
+                    "textDocument/prepareTypeHierarchy",
+                    {"textDocument": {"uri": uri}, "position": {"line": line0, "character": char0}},
+                )
+                arr = _norm_list(items)
+                if not arr:
+                    result = []
+                else:
+                    it = arr[0]
+                    subs = client.request("typeHierarchy/subtypes", {"item": it})
+                    sups = client.request("typeHierarchy/supertypes", {"item": it})
+                    result = {
+                        "item": it,
+                        "subtypes": _norm_list(subs),
+                        "supertypes": _norm_list(sups),
+                    }
 
         if isinstance(result, list) and len(result) == 0:
             msg = f"无结果: {op}"

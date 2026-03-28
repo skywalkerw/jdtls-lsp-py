@@ -2,7 +2,7 @@
 name: java-callchain-analysis
 description: >-
   Analyzes Java call chains upward from a method using jdtls-lsp (JDTLS/LSP
-  callHierarchy/incomingCalls). Instructs agents to run jdtls-lsp callchain
+  callHierarchy/incomingCalls). Instructs agents to run jdtls-lsp callchain-up
   --help when unsure of CLI flags. Use when the user asks for 调用链, call chain,
   incoming calls, who calls X, API entry for a method, Spring REST trace from
   service to controller, or keyword-based Java call tracing with jdtls-lsp-py.
@@ -17,16 +17,17 @@ description: >-
 
 ```bash
 jdtls-lsp --help
-jdtls-lsp callchain --help
+jdtls-lsp callchain-up --help
 # 或
 PYTHONPATH=src python3 -m jdtls_lsp.cli --help
-PYTHONPATH=src python3 -m jdtls_lsp.cli callchain --help
+PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up --help
 ```
 
 ## 何时使用
 
 - 从**方法/关键字**出发，**向上**追到 Controller、REST、无上游或环。
 - 需要比纯文本 grep **更语义化**的调用关系（LSP `callHierarchy/incomingCalls`）。
+- 从某方法出发 **向下** 展开多层被调子图（`outgoingCalls` BFS、边表）请用 **`callchain-down`**（入口与 `callchain-up` 相同；**不支持**多文件 grep 多起点）。
 
 ## 前置条件
 
@@ -45,7 +46,7 @@ PYTHONPATH=src python3 -m jdtls_lsp.cli callchain --help
 
 ```bash
 cd /path/to/jdtls-lsp-py
-PYTHONPATH=src python3 -m jdtls_lsp.cli callchain "$PROJECT" \
+PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up "$PROJECT" \
   --query saveMonitorData --format markdown --max-depth 100
 ```
 
@@ -56,7 +57,7 @@ PYTHONPATH=src python3 -m jdtls_lsp.cli callchain "$PROJECT" \
 5. **多 grep 起点去重**（同一方法命中 Controller / `*Impl` / 接口等多条链时）：加过滤只保留实现类一条，例如：
 
 ```bash
-PYTHONPATH=src python3 -m jdtls_lsp.cli callchain "$PROJECT" \
+PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up "$PROJECT" \
   --query saveMonitorData \
   --grep-skip-interface --grep-skip-rest-entry --grep-max-entry-points 1 \
   --format markdown

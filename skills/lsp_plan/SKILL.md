@@ -2,7 +2,7 @@
 
 ```yaml
 name: lsp_plan
-what: Java 多步骤分析 **只通过 jdtls-lsp CLI**（analyze / callchain）；glob/grep 列待办 → run_command 或 dispatch_sub_task+run_command 并行；清单未完成不总结；大 log 只 grep/tail。
+what: Java 多步骤分析 **只通过 jdtls-lsp CLI**（analyze / callchain-up）；glob/grep 列待办 → run_command 或 dispatch_sub_task+run_command 并行；清单未完成不总结；大 log 只 grep/tail。
 when: 全项目/多文件 Java 分析、调用链、并行子任务。
 triggers:
   - 调用链
@@ -26,7 +26,7 @@ triggers:
 
 - 已安装 [jdtls-lsp-py](https://github.com/skywalkerw/jdtls-lsp-py)（`pip install -e .` 或 `PYTHONPATH=src`），本机可执行 `jdtls-lsp` 或 `python3 -m jdtls_lsp.cli`。
 - 目标为 **Maven/Gradle** 工程根；首次索引较慢。
-- 不确定参数时：**先执行** `jdtls-lsp --help`、`jdtls-lsp analyze --help`、`jdtls-lsp callchain --help`。
+- 不确定参数时：**先执行** `jdtls-lsp --help`、`jdtls-lsp analyze --help`、`jdtls-lsp callchain-up --help`。
 
 ## 核心原则
 
@@ -42,8 +42,8 @@ triggers:
 | 工作区符号 | `jdtls-lsp analyze "$PROJECT" workspaceSymbol --query 'com.example.Foo'` |
 | 单文件符号树 | `jdtls-lsp analyze "$PROJECT" documentSymbol --file src/.../Foo.java` |
 | 引用 / 定义 / hover / 实现 / 一层入出站 | `jdtls-lsp analyze "$PROJECT" <operation> --file ... --line L --char C` |
-| 向上调用链 | `jdtls-lsp callchain "$PROJECT" --query <kw> --format markdown --max-depth N` |
-| 多起点去重 | `callchain` 加 `--grep-skip-interface --grep-skip-rest-entry --grep-max-entry-points 1` 等（见 `--help`） |
+| 向上调用链 | `jdtls-lsp callchain-up "$PROJECT" --query <kw> --format markdown --max-depth N` |
+| 多起点去重 | `callchain-up` 加 `--grep-skip-interface --grep-skip-rest-entry --grep-max-entry-points 1` 等（见 `--help`） |
 
 计划阶段可配合 **`glob`**、**`grep`** 缩小范围；需要 LSP 时 **只走上述命令**，不要用其它 LSP 工具。
 
@@ -57,7 +57,7 @@ triggers:
 ### 2. 主 Agent 直接执行
 
 - 单点分析：一条 `jdtls-lsp analyze "$PROJECT" references|definition|...`。
-- 调用链：一条 `jdtls-lsp callchain "$PROJECT" ...`。
+- 调用链：一条 `jdtls-lsp callchain-up "$PROJECT" ...`。
 
 ### 3. 并行分派（可选）
 

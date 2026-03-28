@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
@@ -18,6 +19,7 @@ from jdtls_lsp.java_grep import (
     scan_method_line_candidates,
     sort_grep_hits_by_score,
 )
+from jdtls_lsp.callchain_format import format_callchain_markdown, format_downchain_markdown
 from jdtls_lsp.logutil import format_payload
 
 _log = logging.getLogger("jdtls_lsp.callchain")
@@ -804,6 +806,24 @@ def _incoming_calls_with_retry(client: LSPClient, item: dict[str, Any]) -> Any:
     raise RuntimeError("incomingCalls: no candidates")
 
 
+def _outgoing_calls_candidates(client: LSPClient, item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Mirror ``_incoming_calls_candidates`` for ``callHierarchy/outgoingCalls`` (JDTLS stability)."""
+    return _incoming_calls_candidates(client, item)
+
+
+def _outgoing_calls_with_retry(client: LSPClient, item: dict[str, Any]) -> Any:
+    last_err: RuntimeError | None = None
+    for cand in _outgoing_calls_candidates(client, item):
+        try:
+            return client.request("callHierarchy/outgoingCalls", {"item": cand})
+        except RuntimeError as e:
+            last_err = e
+            _log.debug("outgoingCalls retry: %s", e)
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("outgoingCalls: no candidates")
+
+
 def _node_from_item(item: dict[str, Any], root: Path, default_class: str | None = None) -> dict[str, Any]:
     uri = str(item.get("uri", ""))
     path = _uri_to_path(uri)
@@ -903,62 +923,102 @@ def _trace_up_all(
         out_chains.append({"chain": chain, "stopReason": "no_incoming"})
 
 
-_STOP_REASON_LABEL: dict[str, str] = {
-    "rest_endpoint": "REST 接口（检测到 @RequestMapping 等）",
-    "abstract_class": "abstract 类",
-    "max_depth": "达到 max_depth",
-    "no_incoming": "无上游调用（LSP incomingCalls 为空）",
-    "cycle": "检测到调用环",
-    "jdtls_error": "JDTLS incomingCalls 内部错误（常见为 NPE，链到此为止）",
-}
+def _item_to_node_key(item: dict[str, Any], root: Path) -> str:
+    return _node_key(_node_from_item(item, root))
 
 
-def _short_method(name: str, max_len: int = 72) -> str:
-    s = str(name).strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 3] + "..."
+def _trace_outgoing_bfs(
+    client: LSPClient,
+    root: Path,
+    start_item: dict[str, Any],
+    *,
+    max_depth: int,
+    max_nodes: int,
+    max_branches: int,
+) -> dict[str, Any]:
+    """
+    BFS along ``callHierarchy/outgoingCalls`` from ``start_item``.
+    Each node is expanded at most once; edges deduped by (from,to).
+    """
+    max_depth = max(0, int(max_depth))
+    max_nodes = max(1, int(max_nodes))
+    max_branches = max(1, int(max_branches))
 
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    edge_seen: set[tuple[str, str]] = set()
+    expanded: set[str] = set()
+    jdtls_errors: list[dict[str, Any]] = []
+    stop_reason = "complete"
 
-def _short_class_name(name: str, max_len: int = 48) -> str:
-    """仅保留简单类名（去包名），过长再截断。"""
-    s = str(name).strip()
-    if not s:
-        return "?"
-    if "." in s:
-        s = s.rsplit(".", 1)[-1]
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 3] + "..."
+    sk = _item_to_node_key(start_item, root)
+    nodes[sk] = _node_from_item(start_item, root)
 
+    q: deque[tuple[dict[str, Any], int]] = deque([(start_item, 0)])
 
-def _short_file_loc(file_rel: str, line: Any) -> str:
-    """图示中只显示 `文件名:行号`，缩短包路径。"""
-    try:
-        base = Path(str(file_rel)).name
-    except Exception:
-        base = str(file_rel).split("/")[-1].split("\\")[-1]
-    return f"{base}:{line}"
+    while q:
+        item, depth = q.popleft()
+        key = _item_to_node_key(item, root)
+        if key not in nodes:
+            nodes[key] = _node_from_item(item, root)
+        if depth >= max_depth:
+            continue
+        if key in expanded:
+            continue
+        expanded.add(key)
 
+        try:
+            raw = _outgoing_calls_with_retry(client, item)
+        except RuntimeError as e:
+            jdtls_errors.append({"at": key, "error": str(e)[:1200]})
+            _log.warning("callHierarchy/outgoingCalls failed at %s: %s", key, e)
+            continue
 
-def _ascii_tree_for_chain(nodes: list[dict[str, Any]]) -> str:
-    """Bottom row = 起点方法，向下为各层调用方（向上追踪顺序）。"""
-    if not nodes:
-        return "(空链)"
-    lines: list[str] = []
-    n0 = nodes[0]
-    lines.append(
-        f"{_short_class_name(str(n0.get('class', '?')))}.{_short_method(str(n0.get('method', '')))}  "
-        f"# {_short_file_loc(str(n0.get('file', '')), n0.get('line'))}"
-    )
-    for i in range(1, len(nodes)):
-        n = nodes[i]
-        pad = "    " * i
-        lines.append(
-            f"{pad}└── {_short_class_name(str(n.get('class', '?')))}.{_short_method(str(n.get('method', '')))}  "
-            f"# {_short_file_loc(str(n.get('file', '')), n.get('line'))}"
-        )
-    return "\n".join(lines)
+        arr = [x for x in _norm_list(raw) if isinstance(x, dict)]
+        arr.sort(key=lambda x: str((x.get("to") or {}).get("name", "")))
+
+        if len(arr) > max_branches:
+            stop_reason = "branch_cap"
+        for oc in arr[:max_branches]:
+            to_item = oc.get("to")
+            if not isinstance(to_item, dict):
+                continue
+            to_key = _item_to_node_key(to_item, root)
+            ek = (key, to_key)
+            if ek not in edge_seen:
+                edge_seen.add(ek)
+                edges.append(
+                    {
+                        "from": key,
+                        "to": to_key,
+                        "fromRanges": oc.get("fromRanges"),
+                    }
+                )
+            if to_key not in nodes:
+                if len(nodes) >= max_nodes:
+                    stop_reason = "max_nodes"
+                    continue
+                nodes[to_key] = _node_from_item(to_item, root)
+            if depth + 1 < max_depth and to_key not in expanded:
+                q.append((to_item, depth + 1))
+
+    if stop_reason == "complete" and len(nodes) >= max_nodes:
+        stop_reason = "max_nodes"
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "stats": {
+            "nodeCount": len(nodes),
+            "edgeCount": len(edges),
+            "expandedCount": len(expanded),
+            "maxDepth": max_depth,
+            "maxNodes": max_nodes,
+            "maxBranches": max_branches,
+        },
+        "stopReason": stop_reason,
+        "jdtlsErrors": jdtls_errors,
+    }
 
 
 def _find_method_signature_line(lines: list[str], line0: int) -> int:
@@ -1169,168 +1229,6 @@ def _enrich_chains_with_top_entry(root: Path, chains: list[dict[str, Any]]) -> N
             ch["topEntry"] = info
 
 
-def format_callchain_markdown(payload: dict[str, Any]) -> str:
-    """
-    将 callchain 的 JSON 结构体转为 Markdown：含流程说明、ASCII 图示与嵌入的 JSON 代码块。
-    """
-    q = payload.get("query") if isinstance(payload.get("query"), dict) else {}
-    project = str(q.get("projectRoot", ""))
-    mode = str(q.get("mode", "class_method"))
-    cname = str(q.get("className", ""))
-    mname = str(q.get("methodName", ""))
-    count = int(payload.get("chainCount", 0))
-    chains = payload.get("chains")
-    if not isinstance(chains, list):
-        chains = []
-
-    query_lines = [
-        f"- **projectRoot**: `{project}`",
-        f"- **mode**: `{mode}`",
-    ]
-    if mode == "class_method":
-        query_lines.append(f"- **className**: `{cname}`")
-        query_lines.append(f"- **methodName**: `{mname}`")
-    elif mode == "file_line":
-        query_lines.append(f"- **file**: `{q.get('file', '')}`")
-        query_lines.append(f"- **line**: `{q.get('line', '')}`")
-        query_lines.append(f"- **character**: `{q.get('character', '')}`")
-        query_lines.append(f"- **解析 class**: `{cname}`")
-        query_lines.append(f"- **解析 method**: `{mname}`")
-    elif mode == "keyword":
-        query_lines.append(f"- **keyword**: `{q.get('keyword', '')}`")
-        kr = q.get("keywordResolution")
-        if isinstance(kr, str) and kr.strip():
-            query_lines.append(f"- **keyword 解析方式**: `{kr.strip()}`")
-        if q.get("keywordResolution") == "java_text_grep":
-            gn = q.get("grepNeedles")
-            if isinstance(gn, list) and gn:
-                query_lines.append(f"- **全文搜索 needles**: `{gn}`")
-            gf = q.get("grepEntryFilters")
-            if isinstance(gf, dict) and gf:
-                if gf.get("skipInterfaceFiles"):
-                    query_lines.append("- **grep 起点过滤**: 跳过「顶层为 interface」的源文件")
-                if gf.get("skipRestEntrypoints"):
-                    query_lines.append("- **grep 起点过滤**: 跳过起点已是 REST 的方法")
-                if gf.get("maxEntryPoints") is not None:
-                    query_lines.append(f"- **grep 起点上限**: 最多 `{gf.get('maxEntryPoints')}` 条（按实现类优先排序后截断）")
-            if q.get("javaGrepMultiFile"):
-                jge = q.get("javaGrepEntries")
-                if isinstance(jge, list) and jge:
-                    if q.get("javaGrepTraceSequential"):
-                        query_lines.append(
-                            f"- **多入口串行追踪**: `{len(jge)}` 个起点（单 LSP / 单 JDTLS，避免并发 incomingCalls）"
-                        )
-                    else:
-                        query_lines.append(
-                            f"- **多入口**: `{len(jge)}` 个起点，workers=`{q.get('javaGrepParallelWorkers', '')}`"
-                        )
-                    for i, ent in enumerate(jge[:24]):
-                        if not isinstance(ent, dict):
-                            continue
-                        query_lines.append(
-                            f"  - `{ent.get('file', '')}` → `{ent.get('className', '')}.{ent.get('methodName', '')}` "
-                            f"(line {ent.get('line', '')})"
-                        )
-                    if len(jge) > 24:
-                        query_lines.append(f"  - … 共 {len(jge)} 条")
-            if q.get("file"):
-                query_lines.append(f"- **grep 命中文件**: `{q.get('file', '')}`")
-            if q.get("line"):
-                query_lines.append(f"- **grep 命中行**: `{q.get('line', '')}`")
-            if q.get("grepHitLine") and q.get("line") and q.get("grepHitLine") != q.get("line"):
-                query_lines.append(f"- **grep 原始命中行**: `{q.get('grepHitLine', '')}`")
-            mp = q.get("matchedLinePreview")
-            if isinstance(mp, str) and mp.strip():
-                query_lines.append(f"- **命中行预览**: `{mp.strip()[:120]}`")
-        query_lines.append(f"- **解析 class**: `{cname}`")
-        query_lines.append(f"- **解析 method**: `{mname}`")
-    else:
-        query_lines.append(f"- **className**: `{cname}`")
-        query_lines.append(f"- **methodName**: `{mname}`")
-
-    lines: list[str] = [
-        "# Java 调用链（callchain）",
-        "",
-        "## 查询",
-        "",
-        *query_lines,
-        "",
-        "## 流程概览",
-        "",
-        "```",
-        "起点方法（实现层）",
-        "    └── LSP callHierarchy/incomingCalls 向上取直接调用方",
-        "            └── 重复直至 REST / abstract / 无上游 / 环 / max_depth",
-        "```",
-        "",
-        "## 概要",
-        "",
-        f"- **链数**: {count}",
-        "- **追踪方向**: 自内向外（被调方法 → 调用者 → …）",
-        "",
-        "## 调用链图示",
-        "",
-    ]
-
-    for idx, ch in enumerate(chains):
-        if not isinstance(ch, dict):
-            continue
-        sr = str(ch.get("stopReason", ""))
-        label = _STOP_REASON_LABEL.get(sr, sr)
-        nodes = ch.get("chain")
-        if not isinstance(nodes, list):
-            nodes = []
-        gsf = ch.get("grepSourceFile")
-        gtitle = f" · grep起点 `{gsf}:{ch.get('grepSourceLine', '')}`" if gsf else ""
-        lines.append(f"### 链 {idx + 1}（终止: {label}{gtitle}）")
-        lines.append("")
-        lines.append("```")
-        lines.append(_ascii_tree_for_chain([x for x in nodes if isinstance(x, dict)]))
-        lines.append("```")
-        lines.append("")
-        je = ch.get("jdtlsError")
-        if isinstance(je, str) and je.strip() and sr == "jdtls_error":
-            lines.append("#### JDTLS 错误（incomingCalls）")
-            lines.append("")
-            lines.append(f"```\n{je.strip()[:900]}\n```")
-            lines.append("")
-        te = ch.get("topEntry")
-        if isinstance(te, dict) and te:
-            lines.append("#### 最上层入口（REST / 注释）")
-            lines.append("")
-            rs = te.get("restSummary")
-            if isinstance(rs, str) and rs.strip():
-                lines.append(f"- **REST**: `{rs.strip()}`")
-            else:
-                rp = te.get("restPath")
-                hm = te.get("httpMethod")
-                if isinstance(rp, str) and rp.strip():
-                    lines.append(f"- **路径**: `{rp.strip()}`")
-                if isinstance(hm, str) and hm.strip():
-                    lines.append(f"- **HTTP**: `{hm.strip()}`")
-            cb = te.get("classBasePath")
-            if isinstance(cb, str) and cb.strip() and not (isinstance(rs, str) and rs.strip()):
-                lines.append(f"- **类级 base**: `{cb.strip()}`")
-            jd = te.get("javadoc")
-            if isinstance(jd, str) and jd.strip():
-                lines.append("- **说明（JavaDoc）**:")
-                lines.append("")
-                for jl in jd.strip().splitlines():
-                    lines.append(f"  {jl}")
-            lines.append("")
-
-    lines.extend(
-        [
-            "## 原始 JSON",
-            "",
-            "```json",
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            "```",
-            "",
-        ]
-    )
-    return "\n".join(lines)
-
 
 def _finalize_callchains(
     root: Path,
@@ -1339,7 +1237,7 @@ def _finalize_callchains(
     output_format: Literal["json", "markdown"],
 ) -> str:
     if not chains:
-        return "无结果: callchain"
+        return "无结果: callchain-up"
     _enrich_chains_with_top_entry(root, chains)
     query_meta = {**query_meta, "projectRoot": str(root)}
     payload = {
@@ -1350,6 +1248,231 @@ def _finalize_callchains(
     if output_format == "markdown":
         return format_callchain_markdown(payload)
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+
+def _finalize_downchain(
+    root: Path,
+    subgraph: dict[str, Any],
+    query_meta: dict[str, Any],
+    output_format: Literal["json", "markdown"],
+) -> str:
+    query_meta = {**query_meta, "projectRoot": str(root)}
+    payload = {
+        "query": query_meta,
+        "direction": "down",
+        "traversal": "bfs",
+        "nodes": subgraph.get("nodes", {}),
+        "edges": subgraph.get("edges", []),
+        "stats": subgraph.get("stats", {}),
+        "stopReason": subgraph.get("stopReason", ""),
+        "jdtlsErrors": subgraph.get("jdtlsErrors", []),
+    }
+    if output_format == "markdown":
+        return format_downchain_markdown(payload)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def trace_outgoing_subgraph_sync(
+    project_path: str,
+    class_name: str | None = None,
+    method_name: str | None = None,
+    *,
+    file_path: str | None = None,
+    line: int | None = None,
+    character: int | None = None,
+    symbol_query: str | None = None,
+    jdtls_path: Path | None = None,
+    max_depth: int = 8,
+    max_nodes: int = 500,
+    max_branches: int = 32,
+    output_format: Literal["json", "markdown"] = "json",
+    grep_skip_interface: bool = False,
+    grep_skip_rest: bool = False,
+    grep_max_entry_points: int | None = None,
+) -> str:
+    """
+    自起点 **向下** BFS 展开 ``callHierarchy/outgoingCalls``，产出有向子图（节点 + 边表）。
+    入口与 ``trace_call_chain_sync`` 相同，但 **不支持** 关键字 grep 产生的多文件多起点（需单起点）。
+    """
+    root_path = Path(project_path).resolve()
+    if not root_path.exists():
+        msg = f"错误: 项目路径不存在 {project_path}"
+        _log.warning("%s", msg)
+        return msg
+
+    has_cm = bool(class_name and str(class_name).strip()) and bool(method_name and str(method_name).strip())
+    has_fl = bool(file_path and str(file_path).strip()) and line is not None
+    has_q = bool(symbol_query and str(symbol_query).strip())
+
+    if has_q and not has_cm and not has_fl:
+        sq0 = str(symbol_query).strip()
+        if "|" not in sq0 and "｜" not in sq0 and "." in sq0:
+            left, right = sq0.rsplit(".", 1)
+            if left and right and re.match(r"^[A-Za-z_]\w*$", right):
+                class_name = left
+                method_name = right
+                has_cm = True
+                has_q = False
+
+    has_cm = bool(class_name and str(class_name).strip()) and bool(method_name and str(method_name).strip())
+    has_q = bool(symbol_query and str(symbol_query).strip()) and not has_cm
+
+    if int(has_cm) + int(has_fl) + int(has_q) != 1:
+        msg = "错误: 请指定唯一入口：(--class 与 --method)，或 (--file 与 --line)，或 (--query 关键字)"
+        _log.warning("%s", msg)
+        return msg
+
+    if has_fl and int(line) < 1:
+        msg = "错误: --line 须为 >=1 的行号"
+        _log.warning("%s", msg)
+        return msg
+
+    client: LSPClient | None = create_client(project_path, jdtls_path=jdtls_path)
+    root = Path(client.root).resolve()
+    try:
+        item: dict[str, Any] | None = None
+        query_meta: dict[str, Any] = {"mode": "class_method"}
+
+        if has_cm:
+            cls = _find_target_class_symbol(client, root, class_name or "")
+            if cls is None:
+                msg = f"错误: 未找到类 {class_name}"
+                _log.warning("%s", msg)
+                return msg
+            cls_uri = _symbol_uri(cls)
+            if not cls_uri:
+                msg = f"错误: 类 {class_name} 缺少位置信息"
+                _log.warning("%s", msg)
+                return msg
+            cls_path = _uri_to_path(cls_uri)
+            if cls_path is None or not cls_path.exists():
+                msg = f"错误: 类文件不存在 {cls_uri}"
+                _log.warning("%s", msg)
+                return msg
+
+            client.open_file(str(cls_path))
+            ds = client.request("textDocument/documentSymbol", {"textDocument": {"uri": cls_uri}})
+            symbols = [x for x in _norm_list(ds) if isinstance(x, dict)]
+            ms = _find_method_symbol_by_name(symbols, class_name, method_name)
+            if ms is None:
+                msg = f"错误: 在类 {class_name} 中未找到方法 {method_name}"
+                _log.warning("%s", msg)
+                return msg
+
+            sel = ms.get("selectionRange", {})
+            if not isinstance(sel, dict):
+                sel = {}
+            st = sel.get("start", {})
+            if not isinstance(st, dict):
+                st = {}
+            line0 = int(st.get("line", 0))
+            char0 = int(st.get("character", 0))
+            if not sel or "start" not in sel:
+                loc = ms.get("location", {})
+                if isinstance(loc, dict):
+                    rng = loc.get("range", {})
+                    if isinstance(rng, dict):
+                        start = rng.get("start", {})
+                        if isinstance(start, dict):
+                            line0 = int(start.get("line", 0))
+                            char0 = int(start.get("character", 0))
+
+            item = _prepare_item(client, cls_uri, line0, char0)
+            if item is None:
+                msg = f"错误: 无法准备调用层级（{class_name}.{method_name}）"
+                _log.warning("%s", msg)
+                return msg
+            query_meta = {
+                "mode": "class_method",
+                "className": class_name.strip(),
+                "methodName": method_name.strip(),
+            }
+
+        elif has_fl:
+            fp = str(file_path).strip()
+            abs_path = (root / fp).resolve() if not Path(fp).is_absolute() else Path(fp).resolve()
+            if not abs_path.exists() or abs_path.suffix.lower() != ".java":
+                msg = f"错误: 文件不存在或不是 .java: {file_path}"
+                _log.warning("%s", msg)
+                return msg
+            client.open_file(str(abs_path))
+            uri = abs_path.as_uri()
+            ln = int(line)
+            ch = int(character) if character is not None else 1
+            line0 = max(0, ln - 1)
+            char0 = max(0, ch - 1)
+            item = _resolve_call_hierarchy_item_from_file_line(client, uri, line0, char0)
+            if item is None:
+                msg = f"错误: 无法在指定位置准备调用层级（{file_path}:{ln}）"
+                _log.warning("%s", msg)
+                return msg
+            cname, mname = _names_from_hierarchy_item(item)
+            try:
+                file_display = str(abs_path.relative_to(root))
+            except ValueError:
+                file_display = str(abs_path)
+            query_meta = {
+                "mode": "file_line",
+                "file": file_display,
+                "line": ln,
+                "character": ch,
+                "className": cname,
+                "methodName": mname,
+            }
+
+        else:
+            item, kw_extra = _resolve_item_from_keyword(
+                client,
+                symbol_query.strip() if symbol_query else "",
+                root,
+                grep_skip_interface=grep_skip_interface,
+                grep_skip_rest=grep_skip_rest,
+                grep_max_entry_points=grep_max_entry_points,
+            )
+            if kw_extra.get("javaGrepMultiFile"):
+                msg = (
+                    "错误: 向下调用链仅支持单起点；当前关键字对应多文件 grep。"
+                    "请改用 --class/--method、--file/--line，或更精确的单文件关键字。"
+                )
+                _log.warning("%s", msg)
+                return msg
+            if item is None:
+                msg = (
+                    f"错误: 关键字「{symbol_query.strip()}」未解析到可调用的方法符号"
+                    "（与 callchain-up 相同规则；可换入口方式）。"
+                )
+                _log.warning("%s", msg)
+                return msg
+            cname, mname = _names_from_hierarchy_item(item)
+            query_meta = {
+                "mode": "keyword",
+                "keyword": symbol_query.strip(),
+                "className": cname,
+                "methodName": mname,
+            }
+            if kw_extra:
+                query_meta.update(kw_extra)
+
+        assert client is not None and item is not None
+        subgraph = _trace_outgoing_bfs(
+            client,
+            root,
+            item,
+            max_depth=max(0, int(max_depth)),
+            max_nodes=max(1, int(max_nodes)),
+            max_branches=max(1, int(max_branches)),
+        )
+        out = _finalize_downchain(root, subgraph, query_meta, output_format)
+        _log.info(
+            "trace_outgoing_subgraph_sync nodes=%s edges=%s",
+            subgraph.get("stats", {}).get("nodeCount"),
+            subgraph.get("stats", {}).get("edgeCount"),
+        )
+        return out
+    finally:
+        if client is not None:
+            client.shutdown()
 
 
 def trace_call_chain_sync(
@@ -1558,7 +1681,7 @@ def trace_call_chain_sync(
                 }
                 query_meta.update(kw_extra)
                 out = _finalize_callchains(root, chains, query_meta, output_format)
-                if out == "无结果: callchain":
+                if out == "无结果: callchain-up":
                     _log.info("%s", out)
                     return out
                 _log.info("trace_call_chain_sync chainCount=%s result_chars=%s", len(chains), len(out))
@@ -1597,7 +1720,7 @@ def trace_call_chain_sync(
             max_depth=max(1, int(max_depth)),
         )
         out = _finalize_callchains(root, chains, query_meta, output_format)
-        if out == "无结果: callchain":
+        if out == "无结果: callchain-up":
             _log.info("%s", out)
             return out
         _log.info("trace_call_chain_sync chainCount=%s result_chars=%s", len(chains), len(out))
@@ -1608,4 +1731,10 @@ def trace_call_chain_sync(
             client.shutdown()
 
 
-__all__ = ["trace_call_chain_sync", "format_callchain_markdown", "extract_top_entry_info"]
+__all__ = [
+    "trace_call_chain_sync",
+    "trace_outgoing_subgraph_sync",
+    "format_callchain_markdown",
+    "format_downchain_markdown",
+    "extract_top_entry_info",
+]

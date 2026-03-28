@@ -11,7 +11,7 @@
 | 能力         | 实现位置                                  | 作用                                                                                                   |
 | ---------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | 单次 LSP 操作  | `analyze` / `analyze_sync`            | `documentSymbol`、`workspaceSymbol`、definition、references、hover、implementation、incoming/outgoingCalls |
-| 向上调用链      | `callchain` + `trace_call_chain_sync` | 关键字/类方法/文件行多入口；`incomingCalls` 向上追踪；REST 终止启发式；多 grep 起点合并与过滤                                        |
+| 向上调用链      | `callchain-up` + `trace_call_chain_sync` | 关键字/类方法/文件行多入口；`incomingCalls` 向上追踪；REST 终止启发式；多 grep 起点合并与过滤                                        |
 | 全文 grep 辅助 | `java_grep.py`                        | 关键字变体、排序、与 workspace 索引互补                                                                            |
 | JDTLS 生命周期 | `jdtls.py`、`client.py`、`jrpc.py`      | 启动、JSON-RPC、与 LiteClaw 语义对齐                                                                          |
 | 技能与文档      | `skills/`*                            | 引导智能体用 CLI，而非替代本地计算                                                                                  |
@@ -29,7 +29,7 @@
 | 需求                          | 现状                        | 缺口                                                      |
 | --------------------------- | ------------------------- | ------------------------------------------------------- |
 | 包 / 模块边界                    | 仅通过文件路径与 Maven/Gradle 根推断 | 无 **多模块 reactor** 视图、无模块间依赖汇总（需 `mvn`/`gradle` 或解析 pom） |
-| 分层（Controller/Service/Repo） | callchain 里部分 REST 识别     | 无 **全量分层扫描**、无 **目录约定 → 角色** 的统计报告                      |
+| 分层（Controller/Service/Repo） | 向上调用链（`callchain-up`）中部分 REST 识别     | 无 **全量分层扫描**、无 **目录约定 → 角色** 的统计报告                      |
 | 类型关系（继承/实现）                 | `implementation` 单点       | 无 **类型层次树**、**接口实现者列表** 的批量导出                           |
 
 
@@ -48,7 +48,7 @@
 
 | 需求          | 现状                      | 缺口                                                          |
 | ----------- | ----------------------- | ----------------------------------------------------------- |
-| HTTP API 目录 | callchain 链顶部分 REST 元数据 | 无 **全 Controller 扫描** 的 **Method + Path + 类** 表             |
+| HTTP API 目录 | 向上调用链链顶部分 REST 元数据 | 无 **全 Controller 扫描** 的 **Method + Path + 类** 表             |
 | 外部依赖        | 无                       | 无 **Feign / RestTemplate / JDBC** 调用点的汇总（需规则或 LSP + 简单 AST） |
 | 配置与绑定       | 无                       | 无 `@Value` / `@ConfigurationProperties` 与代码路径关联             |
 
@@ -71,6 +71,7 @@
 | ------------- | ----------------------------------------------- |
 | 技能只教「怎么调 CLI」 | 正确，但**把编排工作甩给模型**；若不做 `**design` 流水线`，模型仍要做大量步骤 |
 | 长 JSON 塞上下文   | 模型负担重、易截断                                       |
+| **业务语义 / 关键逻辑** | 工具只给结构；**无**「候选业务方法 → 摘录 → 结构化槽位 → 模型填语义」的固定流水线 |
 
 
 ---
@@ -79,7 +80,7 @@
 
 1. **分层交付**：本地工具输出 **机器可读主产物**（JSON/YAML）+ **人可读摘要**（Markdown 章节）；模型只写「总览、例外、业务含义」。
 2. **确定性优先**：能 LSP 则 LSP；能静态规则则规则；**grep 仅作兜底**。
-3. **可组合子命令**：`analyze` / `callchain` 保持原子能力；新增 `**design`** 或 `**report**` 作为**编排层**，内部复用现有库 API。
+3. **可组合子命令**：`analyze` / `callchain-up` 保持原子能力；新增 `**design`** 或 `**report**` 作为**编排层**，内部复用现有库 API。
 4. **规模可控**：全仓库扫描必须支持 **包过滤、模块过滤、最大深度、最大文件数**，避免 OOM 与超时。
 5. **与 IDE 一致**：语义以 JDTLS 为准；文档说明与 **LiteClaw `lsp_java_analyze`** 对齐的边界。
 
@@ -97,9 +98,10 @@
   采集层                 聚合层                 输出层
   (现有+扩展)            (新)                   (新)
   - analyze_*          - 包/模块索引          - markdown_bundle
-  - callchain_*        - REST 目录            - json_graph
+  - callchain-up / trace_call_chain_sync - REST 目录            - json_graph
   - mvn/gradle 树(可选) - 调用图裁剪           - mermaid_diagrams
   - 类型层次(新 LSP)    - 分层统计             - files.zip
+  - 关键逻辑候选+摘录   - 本地结构化摘要        - extracts/ + business.md 槽位
 ```
 
 ---
@@ -114,7 +116,7 @@
 | A1  | `**jdtls-lsp design scan**`     | 扫描 `projectRoot`，输出 **模块列表**（Maven `modules` / Gradle `include` 解析 + 根 `pom`/`settings.gradle`）；不依赖 JDTLS 或轻量 |
 | A2  | `**jdtls-lsp design rest-map`** | 基于 **JDTLS + 简单 AST/正则**（可选）枚举带 `@RestController`/`@RequestMapping` 的类与方法，输出 **统一表**：HTTP 方法、路径、类#方法、文件行      |
 | A3  | `**jdtls-lsp design symbols`**  | 对 `src/main/java` 批量 `documentSymbol`（可带 glob），**聚合**为「包 → 顶层类型列表」JSON                                        |
-| A4  | `**jdtls-lsp design bundle`**   | 调用 A1–A3 + `callchain`（可配置入口关键字列表），生成 `**design/**` 目录：`index.md` + `graphs/*.mmd` + `data/*.json`            |
+| A4  | `**jdtls-lsp design bundle`**   | 调用 A1–A3 + `callchain-up`（可配置入口关键字列表），生成 `**design/**` 目录：`index.md` + `graphs/*.mmd` + `data/*.json`；**可选** 串联 **阶段 D**，一并产出关键逻辑摘录与 `business.md`            |
 
 
 **智能体工作**：只传 `project` + 业务入口关键字；**本地**生成 80% 结构内容。
@@ -139,6 +141,24 @@
 | C3  | **快照缓存**  | 可选：序列化 workspace symbol 摘要、REST 表，带 **项目 hash + JDTLS 版本** 失效条件           |
 
 
+### 阶段 D：关键业务逻辑摘录与语义补全
+
+目标：**从代码中摘出高价值业务逻辑片段**，先做**确定性、可复现的初步分析**，再把**业务含义**交给模型补全，写入详细设计的人读章节，避免模型在长仓库里自行「找重点」。
+
+
+| 编号 | 功能 | 说明 |
+| --- | --- | --- |
+| D1 | **关键逻辑候选** | 多信号融合（可配置权重）：如 **REST→Service** 的 `callchain-up` **落点**、`@Service`/`@Component` 且 **入站调用多**（LSP `references` 或 `callchain-up` 统计）、`@Transactional` 方法、**圈复杂度/方法行数**超阈、用户给定 **关键字/包前缀**。输出 `data/key_logic_candidates.json`（类、方法、理由、优先级）。 |
+| D2 | **代码摘录** | 对候选方法拉取源码区间（路径 + 起止行）；可选 **折叠** 样板代码（纯 getter/setter、空实现）。输出 `extracts/*.md`（fenced Java）或 `extracts/*.java`，并带 **稳定锚点**（`类#方法`、行号）供交叉引用。 |
+| D3 | **本地初步分析**（无模型） | 仅输出**结构化、可机器校验**字段：方法签名；**一层 outgoing 调用**清单；受检/非受检异常声明；**读写字段/DAO 调用**（轻量 AST 或正则 + LSP 校验）；分支与循环的**粗粒度计数**；与 A2 REST 条目的**关联 ID**。写入 `data/key_logic_struct.json`。 |
+| D4 | **模型槽位文档** | 生成 `design/business.md`（或 `design/chapters/04-key-logic.md`）：每候选一节，模板为 **「摘录引用 → D3 结构化摘要 → 【待填】业务规则 / 前置与后置 / 与领域对象关系」**。模型**只填待填区**，不替代 D1 选点与 D2 摘录。 |
+| D5 | **（可选）弱语义标签** | 词典或小型分类器：对方法名/注释打 **topic 标签**（如计费、库存），仅作**分组与排序**，不替代 D4 正文。 |
+
+
+**职责划分**：**工具链**负责候选排序、摘录、D3 摘要、模板与交叉链接（可测试、可回归）；**模型**在已摘录、已结构化的小上下文中补全 **业务语义** 与产品规则对应关系。
+
+**与阶段 B**：D1 若用「入站多」作信号，可复用 **B1** 的调用统计；无 B1 时可用 **references 计数** 或 **callchain-up + 规则** 降级。
+
 ---
 
 ## 6. 对「模型少做事」的配套
@@ -147,8 +167,9 @@
 | 措施                           | 说明                                                             |
 | ---------------------------- | -------------------------------------------------------------- |
 | **默认输出到 `design/`**          | 模型读 `index.md` summary + 点链接，不读全量 JSON                         |
-| **固定章节模板**                   | `design` 生成：概述 / 模块 / 接口清单 / 关键调用链 / 待确认事项                     |
+| **固定章节模板**                   | `design` 生成：概述 / 模块 / 接口清单 / 关键调用链 / **关键业务逻辑（摘录+D3+模型补全）**/ 待确认事项                     |
 | **待确认事项** 占位                 | 由工具根据「无引用」「无测试覆盖」等启发式列 checklist，模型只填空                         |
+| **`business.md` 槽位**            | 模型只读摘录与 `key_logic_struct.json`，填写 **业务规则与流程叙述**；全仓库检索由工具在 D1 已完成 |
 | **技能** `java-reverse-design` | 只描述 **何时跑 `design bundle`**、如何解读 `index.md`，**不**逐步拼 `analyze` |
 
 
@@ -159,6 +180,7 @@
 - **JDTLS 性能**：全量 `documentSymbol` 大项目需分批、限流；**必须**可配置包含/排除路径。
 - **Spring 以外框架**：REST 映射规则需可插拔；**非 Web** 项目 A2 可能为空，属正常。
 - **法律与保密**：逆向工程用于**自有或授权代码**；文档中注明适用范围。
+- **业务语义**：D3 的统计与调用清单为**启发式、可回归**；**领域含义**以 D4 模型补全或人工为准，避免把「复杂度计数」误读成业务规则。
 
 ---
 
@@ -169,7 +191,7 @@
 | ---------------------------------------- | ---------------------- |
 | `analyze_sync` / `trace_call_chain_sync` | 编排层直接 import           |
 | `java_grep.py`                           | REST 扫描、类名发现时的兜底       |
-| `docs/TEST_PLAN.md`                      | 新增 `design` 后增加集成用例与回归 |
+| `docs/TEST_PLAN.md`                      | 新增 `design` 与 **阶段 D**（摘录、结构化摘要）后增加集成用例与回归 |
 
 
 ---
@@ -177,11 +199,13 @@
 ## 9. 建议的下一步（实施顺序）
 
 1. 定稿 **A1–A4** 的 JSON schema 与 `index.md` 模板（1 页纸即可）。
-2. 实现 **REST 映射枚举**（价值/难度比最高）。
-3. 实现 `**design bundle`** 最小版（无 callchain 也可先跑通 A1+A3）。
-4. 补充 **pytest** 与 fixture 小项目。
-5. 新增 **skill `java-reverse-design`**，收缩智能体职责。
+2. 定稿 **D1–D4** 的 JSON schema 与 `business.md` 章节模板（含与 REST/callchain-up 的交叉引用字段）。
+3. 实现 **REST 映射枚举**（价值/难度比最高）。
+4. 实现 `**design bundle**` 最小版（无 callchain-up 也可先跑通 A1+A3）。
+5. 实现 **D2 摘录 + D3 本地摘要**（候选可先用手动列表或简单规则，再迭代 D1）。
+6. 补充 **pytest** 与 fixture 小项目。
+7. 新增 **skill `java-reverse-design`**，收缩智能体职责（含「何时填 `business.md`」）。
 
 ---
 
-*本文档为设计方案，非承诺排期；实现时以 issue/里程碑拆分。*
+*本文档为设计方案，非承诺排期；实现时以 issue/里程碑拆分。**

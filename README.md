@@ -66,7 +66,7 @@ jdtls-lsp [-v | -vv] [--log-level LEVEL] <子命令> ...
 **日志**默认打到 **stderr**；**分析结果**（JSON / Markdown）在 **stdout**。保存日志示例：
 
 ```bash
-jdtls-lsp -v callchain /path/to/project --query foo --format json 2> jdtls-lsp.log
+jdtls-lsp -v callchain-up /path/to/project --query foo --format json 2> jdtls-lsp.log
 ```
 
 **环境变量（日志）**
@@ -80,8 +80,23 @@ jdtls-lsp -v callchain /path/to/project --query foo --format json 2> jdtls-lsp.l
 
 | 子命令 | 作用 |
 |--------|------|
-| `analyze` | 单次 LSP 操作（符号、定义、引用、call hierarchy 等） |
-| `callchain` | 从某方法出发 **向上** 追调用链（直到 REST / abstract / 无上游 / 环 / 深度上限） |
+| `analyze` | 单次 LSP 操作（符号、定义、引用、call hierarchy、**类型层次** 等） |
+| `callchain-up` | 从某方法出发 **向上** 追调用链（直到 REST / abstract / 无上游 / 环 / 深度上限） |
+| `callchain-down` | 从某方法出发 **向下** BFS 展开 `outgoingCalls` 子图（边表 + 节点上限） |
+| `entrypoints` | **静态**扫描 `main` / `@SpringBootApplication` 等（无需 JDTLS） |
+| `java-grep` | 在 `*.java` 内**全文**搜索关键字（`rg` 优先，否则 Python；无需 JDTLS） |
+
+### 调用链与静态分析边界（易「断链」）
+
+`callchain-up` / `callchain-down` 依赖 JDTLS 的 **`callHierarchy` + `incomingCalls` / `outgoingCalls`**，边来自 **编译期/IDE 调用图**，不是运行时。以下情形常见 **链不完整** 或 **`no_incoming`**（静态图里根本没有那条边）：
+
+| 情形 | 为何断链 |
+|------|----------|
+| **反射**（`Method.invoke`、`Constructor.newInstance`、`Class.forName` 等） | 静态上多停在 `invoke`/`newInstance`；**无法**可靠解析到反射实际指向的方法。 |
+| **动态代理**（JDK `Proxy`、CGLIB、拦截器等） | 边多在代理/接口层，**具体实现类** 与手写调用方之间常缺边。 |
+| **工厂 / 容器**（`BeanFactory.getBean`、SPI、`ServiceLoader`、注册表按名取实现等） | 若依赖 **运行时** 才绑定的类型，静态图往往只能追到接口或工厂方法。 |
+
+**实务**：REST/直接调用仍较可靠；遇反射/代理路径可配合 `analyze references`、`java-grep` 或运行时工具补全。本工具**未**对反射/代理做单独修补，行为与 JDT 一致。
 
 ---
 
@@ -106,6 +121,7 @@ jdtls-lsp analyze <project> <operation> [选项]
 | `implementation` | 同上 | 同 `definition` |
 | `incomingCalls` | 同上 | 在该位置解析 call hierarchy 后取 **incoming** |
 | `outgoingCalls` | 同上 | 在该位置解析 call hierarchy 后取 **outgoing** |
+| `typeHierarchy` | 同上 | 光标须在**类型名**上：`prepareTypeHierarchy` + `subtypes` / `supertypes`（需 JDTLS/LSP 支持） |
 
 **输出**：完整 JSON 字符串（无长度截断）。无结果时返回以 `无结果:` 开头的提示行。
 
@@ -126,10 +142,10 @@ jdtls-lsp analyze /path/to/project references \
 
 ---
 
-## `callchain`：详细说明
+## `callchain-up`：详细说明
 
 ```text
-jdtls-lsp callchain <project> [入口三选一] [选项]
+jdtls-lsp callchain-up <project> [入口三选一] [选项]
 ```
 
 ### 入口（**必须且只能**选一种）
@@ -171,7 +187,7 @@ jdtls-lsp callchain <project> [入口三选一] [选项]
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `--max-depth` | 20 | 向上追踪最大层数 |
-| `--format` | `markdown` | `markdown`：说明 + ASCII 图 + 末尾嵌入 JSON；`json`：仅 JSON |
+| `--format` | `markdown` | `markdown`：**概要说明** + **调用起点入口（重点）**（与向下链叶节点同款 `` `类.method(…)` `文件名:行` ``，再拼 **REST**、终止码；grep 多起点汇至同一顶层则 **链 2、3** 合并一行）+ ASCII 图 + 末尾 JSON；`json`：仅 JSON |
 | `--grep-workers` | — | 兼容保留；多入口串行追踪时**不**用于并行调度。可用环境变量 `JDTLS_LSP_GREP_WORKERS`（同上） |
 | `--grep-skip-interface` | 关 | 仅 `java_text_grep`：跳过 interface 源文件中的命中 |
 | `--grep-skip-rest-entry` | 关 | 仅 `java_text_grep`：跳过起点已是 REST 的方法 |
@@ -204,26 +220,78 @@ jdtls-lsp callchain <project> [入口三选一] [选项]
 
 ```bash
 # 类 + 方法
-jdtls-lsp callchain /path/to/project \
+jdtls-lsp callchain-up /path/to/project \
   --class com.example.service.OrderService --method createOrder --max-depth 20
 
 # 文件 + 行号（1-based）
-jdtls-lsp callchain /path/to/project \
+jdtls-lsp callchain-up /path/to/project \
   --file src/main/java/com/example/Foo.java --line 42
 
 # 单关键字
-jdtls-lsp callchain /path/to/project --query createOrder
-jdtls-lsp callchain /path/to/project --query OrderServiceImpl.createOrder
+jdtls-lsp callchain-up /path/to/project --query createOrder
+jdtls-lsp callchain-up /path/to/project --query OrderServiceImpl.createOrder
 
 # 多关键字（仅全文 grep 合并，适合同时搜表名与实体名）
-jdtls-lsp callchain /path/to/project --query 'saveMonitorData|monitor_data' --format json
+jdtls-lsp callchain-up /path/to/project --query 'saveMonitorData|monitor_data' --format json
 
 # 全文 grep 命中多处（Controller / Impl / 接口）时只保留一条实现类起点链
-jdtls-lsp callchain /path/to/project --query saveMonitorData \
+jdtls-lsp callchain-up /path/to/project --query saveMonitorData \
   --grep-skip-interface --grep-skip-rest-entry --grep-max-entry-points 1
 
 # 仅 JSON、便于脚本解析
-jdtls-lsp callchain /path/to/project --class Foo --method bar --format json
+jdtls-lsp callchain-up /path/to/project --class Foo --method bar --format json
+```
+
+---
+
+## `callchain-down`：向下调用子图（阶段 B1）
+
+与 `callchain-up` **共用入口**（类+方法 / 文件+行 / 单起点关键字），但沿 **`callHierarchy/outgoingCalls`** 做 **BFS**，产出 `nodes`（键 → 节点）与 `edges`（`from` → `to`）。
+
+- **不支持** 关键字 **多文件 grep 多起点**（若 `--query` 解析出多入口，会报错并提示改用 `--class`/`--file`）。
+- **主要参数**：`--max-depth`（默认 8）、`--max-nodes`（默认 500）、`--max-branches`（每层最多 outgoing 条数，默认 32）。
+- **`--format markdown`**（默认）：含 **概要说明** 与 **下游终点分类（重点）**——按启发式列出 **数据库访问**、**中间件**、**第三方/HTTP 客户端**；简单 **get/set/is** 叶节点在 Markdown 中 **按文件汇总条数**，不逐条展开；其余叶节点逐条列出（有上限）。**JSON `nodes` 始终完整**，无删减。
+
+```bash
+jdtls-lsp callchain-down /path/to/project \
+  --class com.example.service.OrderService --method createOrder --format json
+
+jdtls-lsp callchain-down /path/to/project \
+  --file src/main/java/com/example/Foo.java --line 42 --max-depth 5 --max-nodes 200
+```
+
+---
+
+## `entrypoints`：静态入口扫描（阶段 B3）
+
+不启动 JDTLS，仅在工程内扫描 `*.java`（跳过 `target`/`build` 等目录），匹配：
+
+- `public static void main(String[] args)` 形式；
+- `@SpringBootApplication`；
+- 行内出现 `WebApplicationInitializer`。
+
+```bash
+jdtls-lsp entrypoints /path/to/project
+```
+
+输出 JSON：`projectRoot`、`entryCount`、`entries[]`（`kind`、`file`、`line`、`preview`）。
+
+---
+
+## `java-grep`：Java 全文搜索（无需 JDTLS）
+
+与 `callchain-up` 中 **`java_text_grep`** 使用相同的 **needle 规则**（`\|` / `｜` 拆多段、合并命中）与 **跳过 `target`/`build` 等目录** 的策略；仅做文本搜索，**不**解析符号、**不**调 LSP。
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--query` / `-q` | （必填） | 关键字；支持 **`\|`** / **全角 `｜`** 多段 |
+| `--max-hits` | `200` | 返回条数上限 |
+| `--no-sort` | 关 | 不按 `score_grep_hit` 启发式排序 |
+| `--format` | `json` | `json`：`needles`、`hits[]`（`file`、`line`、`text`、`score`）；`text`：每行 `path:line:行内容` |
+
+```bash
+jdtls-lsp java-grep /path/to/project -q saveMonitorData --format json
+jdtls-lsp java-grep /path/to/project -q 'foo|bar' --format text --max-hits 50
 ```
 
 ---
@@ -246,6 +314,25 @@ out = analyze_sync(
 print(out)
 ```
 
+### `trace_outgoing_subgraph_sync`
+
+```python
+from pathlib import Path
+from jdtls_lsp.callchain import trace_outgoing_subgraph_sync
+
+text = trace_outgoing_subgraph_sync(
+    "/path/to/project",
+    "com.example.Foo",
+    "bar",
+    jdtls_path=Path("/path/to/jdtls"),
+    max_depth=8,
+    max_nodes=500,
+    max_branches=32,
+    output_format="json",
+)
+print(text)
+```
+
 ### `trace_call_chain_sync`
 
 ```python
@@ -264,6 +351,18 @@ text = trace_call_chain_sync(
     grep_max_entry_points=None,  # 例如 1 与 CLI --grep-max-entry-points 1 一致
 )
 print(text)
+```
+
+向上/向下链的 **Markdown 字符串**由 `jdtls_lsp.callchain_format` 中的 `format_callchain_markdown`、`format_downchain_markdown` 生成（与 LSP 追踪解耦，便于以后加 HTML/Mermaid 等）；也可继续 `from jdtls_lsp.callchain import format_callchain_markdown`（再导出）。
+
+### `java_grep_report`
+
+```python
+from pathlib import Path
+from jdtls_lsp.java_grep import java_grep_report
+
+payload = java_grep_report(Path("/path/to/project"), "saveMonitorData|foo", sort_by_score=True, max_hits=200)
+# payload["hits"] -> [{"file", "line", "text", "score"}, ...]
 ```
 
 ### 日志（库内）
@@ -309,7 +408,7 @@ cd jdtls-lsp-py
 PYTHONPATH=src python3 -m jdtls_lsp analyze --help
 ```
 
-### `callchain` 出现 `jdtls_error`
+### `callchain-up` 出现 `jdtls_error`
 
 多为 **JDTLS 对某次 `incomingCalls` 的内部 bug**（日志里常见 NPE）。当前实现已做锚点重试；若仍失败，可换入口（`--class`/`--file`）或缩小 `--query` 范围。
 
