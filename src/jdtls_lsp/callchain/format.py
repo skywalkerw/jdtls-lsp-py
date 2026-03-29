@@ -332,6 +332,115 @@ def _collect_downstream_sinks_by_kind(
     return buckets, leaf_keys
 
 
+def _ma_bullet(label: str, val: Any) -> str | None:
+    if val is None or val == "":
+        return None
+    return f"- **{label}**: `{val}`"
+
+
+def manifest_anchor_markdown_lines(ma: dict[str, Any]) -> list[str]:
+    """``query.manifestAnchor`` → Markdown 列表行（与 ``tables-manifest`` / step5 追溯一致）。"""
+    pairs: list[tuple[str, str]] = [
+        ("manifestHitId", "manifestHitId"),
+        ("physicalTable", "physicalTable"),
+        ("anchorKind", "anchorKind"),
+        ("manifestSource", "manifestSource"),
+        ("implFile", "ServiceImpl 文件"),
+        ("className", "className"),
+        ("methodName", "methodName"),
+        ("repositoryType", "repositoryType"),
+        ("implRank", "implRank"),
+        ("entityFile", "entityFile"),
+        ("entityDeclarationLine", "entityDeclarationLine"),
+        ("entityDeclarationCharacter", "entityDeclarationCharacter"),
+        ("entityName", "entityName"),
+        ("entityPathSource", "entityPathSource"),
+        ("sqlLiteralHitFile", "sqlLiteralHitFile"),
+        ("sqlLiteralHitLine", "sqlLiteralHitLine"),
+        ("javaMethod", "javaMethod"),
+        ("javaMethodLine", "javaMethodLine"),
+        ("tableAsFound", "tableAsFound"),
+        ("confidence", "confidence"),
+        ("callchainAnchorMode", "callchainAnchorMode"),
+        ("resolvedCallchainClassName", "resolvedCallchainClassName"),
+        ("resolvedCallchainMethodName", "resolvedCallchainMethodName"),
+        ("xmlFile", "xmlFile"),
+        ("xmlLine", "xmlLine"),
+        ("mapperNamespace", "mapperNamespace"),
+        ("mapperStatementId", "mapperStatementId"),
+        ("javaMapperFile", "javaMapperFile"),
+        ("javaMapperLine", "javaMapperLine"),
+        ("snippet", "snippet"),
+    ]
+    out: list[str] = []
+    for key, label in pairs:
+        if key not in ma:
+            continue
+        ln = _ma_bullet(label, ma[key])
+        if ln:
+            out.append(ln)
+    return out
+
+
+def rest_map_anchor_markdown_lines(ra: dict[str, Any]) -> list[str]:
+    """``query.restMapAnchor`` → Markdown 列表行（与 ``rest-map.json`` / step4 追溯一致）。"""
+    pairs: list[tuple[str, str]] = [
+        ("restHitId", "restHitId"),
+        ("httpMethod", "httpMethod"),
+        ("path", "path"),
+        ("slug", "slug（产物文件名标签）"),
+        ("controllerClassName", "controllerClassName（rest-map）"),
+        ("handlerMethodName", "handlerMethodName（rest-map）"),
+        ("restMapFile", "restMapFile"),
+        ("restMapLine", "restMapLine"),
+        ("annotation", "annotation"),
+        ("anchorClassName", "anchorClassName（callchain-down 起点）"),
+        ("anchorMethodName", "anchorMethodName"),
+        ("anchorResolution", "anchorResolution"),
+    ]
+    out: list[str] = []
+    for key, label in pairs:
+        if key not in ra:
+            continue
+        ln = _ma_bullet(label, ra[key])
+        if ln:
+            out.append(ln)
+    return out
+
+
+def apply_rest_map_anchor_to_downchain_markdown(raw: str, rest_map_anchor: dict[str, Any]) -> str:
+    """
+    将 **rest-map 追溯块** 写入 callchain-down Markdown：解析嵌入 JSON，设置 ``query.restMapAnchor`` 后重排板。
+    """
+    try:
+        obj = extract_trace_payload_dict(raw)
+    except (ValueError, json.JSONDecodeError):
+        return raw
+    q = obj.get("query")
+    if not isinstance(q, dict):
+        q = {}
+    q = {**q, "restMapAnchor": dict(rest_map_anchor)}
+    obj["query"] = q
+    return format_downchain_markdown(obj)
+
+
+def apply_manifest_anchor_to_callchain_markdown(raw: str, manifest_anchor: dict[str, Any]) -> str:
+    """
+    将 **tables-manifest 追溯块** 写入 callchain-up Markdown：解析嵌入 JSON，设置 ``query.manifestAnchor`` 后重排板。
+    解析失败时返回原文。
+    """
+    try:
+        obj = extract_trace_payload_dict(raw)
+    except (ValueError, json.JSONDecodeError):
+        return raw
+    q = obj.get("query")
+    if not isinstance(q, dict):
+        q = {}
+    q = {**q, "manifestAnchor": dict(manifest_anchor)}
+    obj["query"] = q
+    return format_callchain_markdown(obj)
+
+
 def format_callchain_markdown(payload: dict[str, Any]) -> str:
     """
     将 callchain-up 的 JSON 结构体转为 Markdown：含流程说明、ASCII 图示与嵌入的 JSON 代码块。
@@ -410,6 +519,12 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
     else:
         query_lines.append(f"- **className**: `{cname}`")
         query_lines.append(f"- **methodName**: `{mname}`")
+
+    ma = q.get("manifestAnchor")
+    if isinstance(ma, dict) and ma:
+        query_lines.append("")
+        query_lines.append("### Manifest 锚点（tables-manifest 追溯）")
+        query_lines.extend(manifest_anchor_markdown_lines(ma))
 
     entry_blocks = _markdown_up_entry_sections(chains)
     entry_md = "\n\n".join(entry_blocks) if entry_blocks else "_（无可用链）_"
@@ -589,6 +704,12 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"- **line**: `{q.get('line', '')}`")
     elif mode == "keyword":
         lines.append(f"- **keyword**: `{q.get('keyword', '')}`")
+
+    ra = q.get("restMapAnchor")
+    if isinstance(ra, dict) and ra:
+        lines.append("")
+        lines.append("### REST 映射锚点（rest-map 追溯）")
+        lines.extend(rest_map_anchor_markdown_lines(ra))
 
     lines.extend(
         [
@@ -773,12 +894,18 @@ def summarize_trace_down_json(raw: str) -> dict[str, Any]:
     except (ValueError, json.JSONDecodeError) as e:
         return {"error": f"parse: {e}"}
     stats = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
-    return {
+    out_d: dict[str, Any] = {
         "nodeCount": stats.get("nodeCount"),
         "edgeCount": stats.get("edgeCount"),
         "stopReason": obj.get("stopReason"),
         "jdtlsErrors": obj.get("jdtlsErrors") or [],
     }
+    qd = obj.get("query") if isinstance(obj.get("query"), dict) else {}
+    rma = qd.get("restMapAnchor") if isinstance(qd.get("restMapAnchor"), dict) else {}
+    rid = rma.get("restHitId")
+    if rid:
+        out_d["restHitId"] = rid
+    return out_d
 
 
 def summarize_trace_up_json(raw: str) -> dict[str, Any]:
@@ -811,16 +938,26 @@ def summarize_trace_up_json(raw: str) -> dict[str, Any]:
                             "isRest": top.get("isRest"),
                         }
                     )
-    return {
+    out: dict[str, Any] = {
         "chainCount": obj.get("chainCount", n),
         "sampleTops": tops,
     }
+    qsum = obj.get("query") if isinstance(obj.get("query"), dict) else {}
+    mas = qsum.get("manifestAnchor") if isinstance(qsum.get("manifestAnchor"), dict) else {}
+    hid = mas.get("manifestHitId")
+    if hid:
+        out["manifestHitId"] = hid
+    return out
 
 
 __all__ = [
+    "apply_manifest_anchor_to_callchain_markdown",
+    "apply_rest_map_anchor_to_downchain_markdown",
     "extract_trace_payload_dict",
     "format_callchain_markdown",
     "format_downchain_markdown",
+    "manifest_anchor_markdown_lines",
+    "rest_map_anchor_markdown_lines",
     "summarize_trace_down_json",
     "summarize_trace_up_json",
 ]

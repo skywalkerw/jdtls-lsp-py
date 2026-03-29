@@ -73,6 +73,8 @@ def run_design_bundle(
     max_table_xml_files: int = 2_000,
     table_callchains_up: bool = False,
     max_table_callchain_java_scan: int = 12_000,
+    table_callchains_up_extra: bool = False,
+    max_table_up_extra_anchors: int = 24,
     rest_callchains_down: bool = False,
     max_rest_down_endpoints: int = 0,
     rest_down_max_depth: int = 16,
@@ -87,8 +89,8 @@ def run_design_bundle(
     - **step2**：``rest-map.json`` + ``graphs/rest-map.mmd``（可 skip）
     - **step3**：``tables-manifest.json``（可 skip）
     - **step5′**：``queries`` 非空时各关键字 ``callchain-up`` → ``data/callchain-up-*.md``
-    - **step5**：``table_callchains_up``（CLI ``--table-callchains-up``）→ ``callchain-up-table-*.md``、``table-callchains-summary.json``
-    - **step4**：``rest_callchains_down``（CLI ``--rest-callchains-down``）→ ``callchain-down-rest-*.md``、``rest-callchains-down-summary.json``
+    - **step5**：``table_callchains_up``（CLI ``--table-callchains-up``）→ ``data/callchain-up-table/<物理表>/callchain-up-table-*.md``、``table-callchains-summary.json``；可选 ``table_callchains_up_extra``（CLI ``--table-callchains-up-extra``）同时打开 JDBC 字符串与 MyBatis Mapper 两类额外起点（``max_table_up_extra_anchors`` 对二者共用上限）
+    - **step4**：``rest_callchains_down``（CLI ``--rest-callchains-down``）→ ``data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md``、``rest-callchains-down-summary.json``
     - **step6**：``business_summary`` → 根目录 ``business.md``（合并各向下链 ``keyMethods``）
     - **step8**：根目录 ``index.md`` + 返回摘要 dict（stdout 由 CLI 打印）
 
@@ -325,10 +327,14 @@ def run_design_bundle(
 
         if will_table:
             _log.info(
-                "reverse-design bundle: [step5 按表向上] table_callchains_up depth=%s max_impl_scan=%s",
+                "reverse-design bundle: [step5 按表向上] table_callchains_up depth=%s max_impl_scan=%s extra=%s cap_extra=%s",
                 callchain_max_depth,
                 max_table_callchain_java_scan,
+                bool(table_callchains_up_extra),
+                int(max_table_up_extra_anchors),
             )
+            extra_anchors = bool(table_callchains_up_extra)
+            cap_extra = int(max_table_up_extra_anchors)
             tc = run_table_callchains_up(
                 root,
                 manifest_for_callchains,
@@ -338,6 +344,10 @@ def run_design_bundle(
                 max_java_scan=max_table_callchain_java_scan,
                 lsp_client=shared_lsp,
                 output_root=output_dir,
+                table_up_sql_literal=extra_anchors,
+                table_up_mybatis_mapper=extra_anchors,
+                max_table_up_sql_anchors=cap_extra,
+                max_table_up_mybatis_anchors=cap_extra,
             )
             if tc.get("error"):
                 summary["warnings"].append(f"table-callchains-up: {tc['error']}")
@@ -424,6 +434,11 @@ def run_design_bundle(
         if shared_lsp is not None:
             shared_lsp.shutdown()
 
+    if table_callchains_up_extra and not table_callchains_up:
+        summary["warnings"].append(
+            "table-callchains-up-extra: 未指定 --table-callchains-up，已忽略额外 JDBC/MyBatis 锚点"
+        )
+
     if table_callchains_up and skip_callchain:
         summary["warnings"].append("table-callchains-up: 与 --skip-callchain 同时指定，已跳过按表调用链")
 
@@ -494,8 +509,8 @@ def run_design_bundle(
         "| step1 | 工程概要 | `data/modules.json`、`data/symbols-by-package.json` |",
         "| step2 | REST 清单 | `data/rest-map.json`、`graphs/rest-map.mmd` |",
         "| step3 | 数据库表清单 | `data/tables-manifest.json` |",
-        "| step4 | 每接口向下调用链 | `data/callchain-down-rest-*.md`、`rest-callchains-down-summary.json` |",
-        "| step5 | 每表向上调用链 | `data/callchain-up-table-*.md`、`table-callchains-summary.json`；关键字向上见 `callchain-up-*.md` |",
+        "| step4 | 每接口向下调用链 | `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`、`rest-callchains-down-summary.json`（`resolvedByController`，键同目录） |",
+        "| step5 | 每表向上调用链 | `data/callchain-up-table/<表>/callchain-up-table-*.md`、`table-callchains-summary.json`（`resolvedByPhysicalTable`，键同目录）；可选 `--table-callchains-up-extra` 另含同目录下 `*-sql-NN` / `*-mapper-NN`；关键字向上见 `callchain-up-*.md` |",
         "| step6 | 关键业务位置 | 向下链报告（`.md` 文末 JSON）内字段；`business.md`（若生成） |",
         "| step7 | 补全实现细节 | **须另外**用 `jdtls-lsp analyze` / `callchain-up` / `callchain-down` 或 IDE |",
         "| step8 | 汇总（本文件） | `index.md` + 运行结束时的 stdout 摘要 JSON |",
@@ -520,9 +535,9 @@ def run_design_bundle(
             "## 设计约定（阶段 A–D 与 step 对照）",
             "",
             "- **step2 / REST 外向锚点**：读 `data/rest-map.json`，用 **类#方法 + 行** 作为 **step4** `callchain-down` 或 **step7** `analyze` 入口。",
-            "- **step4**：`reverse-design bundle --rest-callchains-down` 对每端点跑 `callchain-down` → `data/callchain-down-rest-*.md`（Markdown，文末嵌入完整 JSON），汇总 `rest-callchains-down-summary.json`（与同次 bundle 内 **step5 / step5′** 共用一次 JDTLS）。",
+            "- **step4**：`reverse-design bundle --rest-callchains-down` 对每端点跑 `callchain-down` → `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`（Markdown，文末嵌入完整 JSON），汇总 `rest-callchains-down-summary.json`（按 Controller 分组，键同 `data/callchain-down-rest/<Controller>/`；与同次 bundle 内 **step5 / step5′** 共用一次 JDTLS）。",
             "- **step3 / 数据库锚点**：`data/tables-manifest.json`；**用户表清单**（`--tables-file` / `--tables`）；`unresolvedTables` 提示动态 SQL 等。",
-            "- **step5**：`--table-callchains-up` → `data/callchain-up-table-*.md`、`table-callchains-summary.json`。**step5′**：`--queries` 为关键字 `callchain-up`（非按表）。",
+            "- **step5**：`--table-callchains-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、`table-callchains-summary.json`（按物理表分组，键同目录）；`--table-callchains-up-extra`（须同开）→ 同目录下 JDBC/MyBatis 额外链。**step5′**：`--queries` 为关键字 `callchain-up`（非按表）。",
             "- **step7**：单点 **`jdtls-lsp callchain-up` / `callchain-down` / `analyze`**（`references`、`callHierarchy` 等）。",
             "- **step1 补充**：`symbols-by-package.json` 为轻量索引，非调用链主线。",
             "- **step6**：`--business-summary` → `business.md`；向下链报告（`.md` 文末 JSON）含 `keyMethods`、`businessCandidate` 等。",

@@ -253,18 +253,23 @@ def merge_key_methods_from_downchain_files(
     project_root: Path,
 ) -> tuple[list[dict[str, Any]], int]:
     """
-    读取 ``callchain-down-rest-*.md``（或遗留 ``*.json``），用 ``callchain.format.extract_trace_payload_dict``
+    读取 ``callchain-down-rest-*.md``（或遗留 ``*.json``），含 ``data/callchain-down-rest/<Controller>/`` 子目录
+    与历史上 ``data/`` 根下扁平文件；用 ``callchain.format.extract_trace_payload_dict``
     恢复 payload，合并 ``keyMethods``（按 class+method+file 去重保留最高分）。
     返回 (合并列表, 读取文件数)。
     """
     data_dir = data_dir.resolve()
     best: dict[tuple[str, str, str], dict[str, Any]] = {}
     nfiles = 0
-    candidates = sorted(
-        p
-        for p in data_dir.glob("callchain-down-rest-*")
-        if p.is_file() and p.suffix in (".md", ".json")
-    )
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for p in sorted(data_dir.rglob("callchain-down-rest-*.md")):
+        if p.is_file():
+            candidates.append(p)
+            seen.add(p)
+    for p in sorted(data_dir.rglob("callchain-down-rest-*.json")):
+        if p.is_file() and p not in seen:
+            candidates.append(p)
     for path in candidates:
         nfiles += 1
         try:
@@ -274,6 +279,10 @@ def merge_key_methods_from_downchain_files(
             continue
         if "keyMethods" not in obj and isinstance(obj.get("nodes"), dict):
             annotate_downchain_business(obj, project_root)
+        try:
+            src_label = str(path.relative_to(data_dir))
+        except ValueError:
+            src_label = path.name
         for km in obj.get("keyMethods") or []:
             if not isinstance(km, dict):
                 continue
@@ -286,12 +295,12 @@ def merge_key_methods_from_downchain_files(
             old = best.get(ck)
             if old is None or sc > int(old.get("score", 0) or 0):
                 row = dict(km)
-                row["sourceFiles"] = [path.name]
+                row["sourceFiles"] = [src_label]
                 best[ck] = row
             elif old is not None and sc == int(old.get("score", 0) or 0):
                 sf = old.get("sourceFiles")
-                if isinstance(sf, list) and path.name not in sf:
-                    sf.append(path.name)
+                if isinstance(sf, list) and src_label not in sf:
+                    sf.append(src_label)
     merged = sorted(best.values(), key=lambda r: (-int(r.get("score", 0)), str(r.get("class", ""))))
     return merged, nfiles
 
@@ -314,7 +323,9 @@ def format_business_md(
         "",
     ]
     if not key_methods:
-        lines.append("_（无候选；需先产出 ``data/callchain-down-rest-*.md``（或 ``*.json``）且节点满足标权阈值）_")
+        lines.append(
+            "_（无候选；需先产出 ``data/callchain-down-rest/<Controller>/callchain-down-rest-*.md``（或同 pattern 的 ``*.json``）且节点满足标权阈值）_"
+        )
         lines.append("")
         return "\n".join(lines)
 

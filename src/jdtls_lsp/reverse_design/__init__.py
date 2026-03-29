@@ -16,10 +16,12 @@ from jdtls_lsp.entry_scan import scan_rest_map
 from jdtls_lsp.reverse_design.batch_symbols_by_package import batch_symbols_by_package
 from jdtls_lsp.reverse_design.scan_modules import scan_modules
 from jdtls_lsp.reverse_design.table_callchains_up import (
+    resolve_entity_anchor_for_table,
     resolve_service_anchor_for_table,
     run_table_callchains_up,
 )
-from jdtls_lsp.reverse_design.table_manifest import build_table_manifest
+from jdtls_lsp.reverse_design.mybatis_mapper_link import resolve_mapper_java_method_from_xml_line
+from jdtls_lsp.reverse_design.table_manifest import build_table_manifest, normalize_table_token_to_physical
 
 __all__ = [
     "annotate_downchain_business",
@@ -28,6 +30,9 @@ __all__ = [
     "format_business_md",
     "infer_service_impl_fqcn",
     "merge_key_methods_from_downchain_files",
+    "normalize_table_token_to_physical",
+    "resolve_mapper_java_method_from_xml_line",
+    "resolve_entity_anchor_for_table",
     "resolve_service_anchor_for_table",
     "run_design_bundle",
     "run_rest_callchains_down",

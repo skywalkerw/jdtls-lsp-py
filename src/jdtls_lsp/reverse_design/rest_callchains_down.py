@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jdtls_lsp.callchain import summarize_trace_down_json, trace_outgoing_subgraph_sync
+from jdtls_lsp.callchain.format import apply_rest_map_anchor_to_downchain_markdown
 from jdtls_lsp.logutil import get_logger
 
 if TYPE_CHECKING:
@@ -39,6 +41,39 @@ def infer_service_impl_fqcn(project_root: Path, controller_fqcn: str) -> str | N
     rel = Path("src/main/java") / (candidate.replace(".", "/") + ".java")
     p = project_root.resolve() / rel
     return candidate if p.is_file() else None
+
+
+def safe_controller_dirname(controller_fqcn: str) -> str:
+    """REST Controller 全限定名 → 安全目录名（与 ``safe_table_filename`` 同类规则）。"""
+    s = re.sub(r"[^\w\-.]+", "_", (controller_fqcn or "").strip())[:120].strip("_")
+    return s or "controller"
+
+
+# 按 Controller 分子目录：data/callchain-down-rest/<safe_fqcn>/callchain-down-rest-*.md
+_REST_DOWN_ROOT_DIRNAME = "callchain-down-rest"
+
+
+def stable_rest_endpoint_hit_id(
+    http_method: str,
+    path: str,
+    controller_fqcn: str,
+    handler_method: str,
+    *,
+    slug: str = "",
+    source_file: str = "",
+    source_line: int = 0,
+) -> str:
+    """
+    **稳定** REST 端点编号：由 ``rest-map`` 语义（方法、路径、Controller、处理器、产物 slug、可选源文件行）派生，
+    同一端点在多次 bundle 中保持不变（``re-`` + 16 位 hex）。
+    """
+    rel = str(source_file).replace("\\", "/").strip()
+    payload = (
+        f"{str(http_method).strip().upper()}|{str(path).strip()}|"
+        f"{str(controller_fqcn).strip()}|{str(handler_method).strip()}|"
+        f"{str(slug)}|{rel}|{int(source_line)}"
+    ).encode("utf-8")
+    return "re-" + hashlib.sha256(payload).hexdigest()[:16]
 
 
 def endpoint_slug(ep: dict[str, Any]) -> str:
@@ -77,7 +112,9 @@ def run_rest_callchains_down(
     ``max_endpoints``：``<=0`` 表示处理全部；否则只处理前 N 条（按 JSON 顺序）。
     若传入 ``lsp_client``，各端点复用该连接（由调用方 ``create_client`` / ``shutdown``）。
 
-    ``data_dir``：各端点 ``callchain-down-rest-*.md``（Markdown，文末含完整 JSON）；``output_root``：``rest-callchains-down-summary.json``。
+    ``data_dir``：各端点 ``data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md``（Markdown，文末含完整 JSON）；``output_root``：``rest-callchains-down-summary.json``。
+
+    成功写入的报告在 ``query.restMapAnchor`` 中含 **restHitId**（``re-`` + 16 hex）及 rest-map 追溯字段；``rest-callchains-down-summary.json`` 按 **Controller FQCN** 分组：``resolvedByController`` / ``withErrorsByController``（键同 ``data/callchain-down-rest/<Controller>/``）；每条 result 亦含 ``restHitId`` / ``restMapAnchor``。
     """
     root = project_root.resolve()
     data_dir = data_dir.resolve()
@@ -114,11 +151,44 @@ def run_rest_callchains_down(
             "slug": slug,
         }
 
+        ep_file = str(ep.get("file", "") or "").replace("\\", "/")
+        ep_line = int(ep.get("line") or 0)
+        re_id = stable_rest_endpoint_hit_id(
+            http_m,
+            path,
+            cls,
+            meth,
+            slug=slug,
+            source_file=ep_file,
+            source_line=ep_line,
+        )
+        row["restHitId"] = re_id
+        rest_anchor: dict[str, Any] = {
+            "restHitId": re_id,
+            "httpMethod": http_m,
+            "path": path,
+            "slug": slug,
+            "controllerClassName": cls,
+            "handlerMethodName": meth,
+        }
+        if ep_file:
+            rest_anchor["restMapFile"] = ep_file
+        if ep_line >= 1:
+            rest_anchor["restMapLine"] = ep_line
+        ann = ep.get("annotation")
+        if ann:
+            rest_anchor["annotation"] = ann
+
         if not cls or not meth:
+            row["restMapAnchor"] = rest_anchor
             row["jdtlsError"] = "错误: rest-map 端点缺少 className 或 methodName"
             results.append(row)
             _log.warning("rest down: skip endpoint missing class/method path=%s", path)
             continue
+
+        safe_ctrl = safe_controller_dirname(cls)
+        ep_out_dir = data_dir / _REST_DOWN_ROOT_DIRNAME / safe_ctrl
+        ep_out_dir.mkdir(parents=True, exist_ok=True)
 
         trace_cls, trace_meth = cls, meth
         impl_fqcn = infer_service_impl_fqcn(root, cls)
@@ -159,9 +229,10 @@ def run_rest_callchains_down(
             output_format="markdown",
         )
 
-        fn = data_dir / f"callchain-down-rest-{slug}.md"
+        fn = ep_out_dir / f"callchain-down-rest-{slug}.md"
         rel_out = str(fn.relative_to(data_dir.parent)) if fn.is_relative_to(data_dir.parent) else str(fn)
         row["outputFile"] = rel_out
+        row["outputSubdir"] = f"data/{_REST_DOWN_ROOT_DIRNAME}/{safe_ctrl}/"
 
         if raw.startswith("错误:") and impl_fqcn:
             _log.warning(
@@ -188,12 +259,21 @@ def run_rest_callchains_down(
             del row["restControllerClassName"]
             row["anchorClassName"] = cls
 
+        rest_anchor["anchorClassName"] = row["anchorClassName"]
+        rest_anchor["anchorMethodName"] = meth
+        rest_anchor["anchorResolution"] = row["anchorResolution"]
+        rcn = row.get("restControllerClassName")
+        if rcn:
+            rest_anchor["restControllerClassName"] = rcn
+        row["restMapAnchor"] = rest_anchor
+
         if raw.startswith("错误:"):
             row["jdtlsError"] = raw[:2000]
             results.append(row)
             _log.warning("rest down: failed %s %s detail=%s", http_m, path, raw[:350])
             continue
 
+        raw = apply_rest_map_anchor_to_downchain_markdown(raw, rest_anchor)
         fn.write_text(raw if raw.endswith("\n") else raw + "\n", encoding="utf-8")
         row["summary"] = summarize_trace_down_json(raw)
         results.append(row)
@@ -204,22 +284,43 @@ def run_rest_callchains_down(
             row.get("summary", {}).get("nodeCount"),
         )
 
+    resolved_rows = [r for r in results if "jdtlsError" not in r]
+    error_rows = [r for r in results if "jdtlsError" in r]
+
+    def _by_controller(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        d: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            cls = str(r.get("className") or "").strip()
+            k = safe_controller_dirname(cls) if cls else "_unknown"
+            d.setdefault(k, []).append(r)
+        return dict(sorted(d.items(), key=lambda x: x[0]))
+
+    resolved_by_ctrl = _by_controller(resolved_rows)
+    errors_by_ctrl = _by_controller(error_rows)
+
     summary_path = out_root / "rest-callchains-down-summary.json"
     payload = {
         "projectRoot": str(root),
         "endpointsTotal": len(eps) if isinstance(eps, list) else 0,
         "endpointsProcessed": len(raw_list),
         "maxEndpointsCap": max_endpoints if max_endpoints and max_endpoints > 0 else None,
-        "resolved": [r for r in results if "jdtlsError" not in r],
-        "withErrors": [r for r in results if "jdtlsError" in r],
+        "options": {
+            "restCallchainSubdirPattern": f"data/{_REST_DOWN_ROOT_DIRNAME}/<controller_fqcn>/",
+            "restHitIdNote": "每条结果 restHitId = SHA-256(httpMethod|path|controller|handler|slug|restMapFile|restMapLine) 前 16 hex，前缀 re-；与 rest-map 端点一一对应可追溯",
+            "summaryGrouping": "resolvedByController / withErrorsByController 的键与 data/callchain-down-rest/<Controller FQCN>/ 目录名一致",
+        },
+        "resolvedByController": resolved_by_ctrl,
+        "withErrorsByController": errors_by_ctrl,
     }
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    res_n = sum(len(v) for v in resolved_by_ctrl.values())
+    err_n = sum(len(v) for v in errors_by_ctrl.values())
     return {
         "summaryFile": str(summary_path.relative_to(out_root))
         if summary_path.is_relative_to(out_root)
         else str(summary_path),
-        "resolvedCount": len(payload["resolved"]),
-        "errorCount": len(payload["withErrors"]),
+        "resolvedCount": res_n,
+        "errorCount": err_n,
         "results": results,
     }

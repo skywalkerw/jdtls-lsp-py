@@ -464,8 +464,8 @@ jdtls-lsp java-grep /path/to/project -q 'foo|bar' --format text --max-hits 50
 | step1 | 工程概要 | `scan` → `modules.json`；`symbols` → `symbols-by-package.json` |
 | step2 | REST 清单（**静态入口**） | `rest-map` → `rest-map.json` |
 | step3 | 数据库表清单 | `db-tables` / bundle → `tables-manifest.json` |
-| step4 | 每接口向下调用链 | bundle `--rest-callchains-down` → `callchain-down-rest-*.md`（文末含完整 JSON） |
-| step5 | 每表向上调用链 | bundle `--table-callchains-up` → `callchain-up-table-*.md`；`--queries` 为 **关键字向上（step5′）** |
+| step4 | 每接口向下调用链 | bundle `--rest-callchains-down` → `data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md`（文末含完整 JSON） |
+| step5 | 每表向上调用链 | bundle `--table-callchains-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`；`--queries` 为 **关键字向上（step5′）** |
 | step6 | 链上关键业务 | 向下链 JSON 内标权；`--business-summary` → `business.md` |
 | step7 | 补全实现细节 | **非 bundle 全自动**：`analyze`、`callchain-up` / `callchain-down`、IDE |
 | step8 | 汇总输出 | bundle 收尾：`index.md` + stdout JSON |
@@ -517,7 +517,7 @@ jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --skip-symbols 
 jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --skip-symbols \
   --rest-callchains-down --max-rest-down-endpoints 10
 
-# step6：已有 callchain-down-rest-*.md（或遗留 .json）时只生成 business.md（可与 --skip-callchain 同用）
+# step6：已有 callchain-down-rest/**/callchain-down-rest-*.md（或 data 根下遗留扁平 .md/.json）时只生成 business.md（可与 --skip-callchain 同用）
 jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --skip-callchain --business-summary
 ```
 
@@ -537,16 +537,17 @@ jdtls-lsp reverse-design bundle <project> [-o ./design-out] [选项…]
 design-out/
   index.md                        # step8：产物分层、八步对照、Warnings
   business.md                     # step6：仅当 --business-summary
-  table-callchains-summary.json   # 仅当 --table-callchains-up：按表 callchain-up 汇总
-  rest-callchains-down-summary.json  # 仅当 --rest-callchains-down：各端点向下链子图汇总
+  table-callchains-summary.json   # 仅当 --table-callchains-up：按物理表分组汇总（键同 data/callchain-up-table/<表>/）
+  rest-callchains-down-summary.json  # 仅当 --rest-callchains-down：按 Controller FQCN 分组汇总（键同 data/callchain-down-rest/<Controller>/）
   data/
     modules.json                  # step1 / A1（除非 --skip-scan）
     rest-map.json                 # step2 / A2（除非 --skip-rest-map）
     tables-manifest.json          # step3 / A2.5（除非 --skip-table-manifest）
     symbols-by-package.json       # step1 补充 / A3（除非 --skip-symbols）
     callchain-up-<安全文件名>.md       # 仅当 --queries
-    callchain-up-table-<表名>.md      # 仅当 --table-callchains-up 且该表成功
-    callchain-down-rest-<METHOD>_<path>.md  # step4；含 step6 节点字段（文末 JSON）
+    callchain-up-table/<物理表名>/callchain-up-table-<表>.md  # 仅当 --table-callchains-up 且该表成功
+    callchain-up-table/<物理表名>/…-sql-NN.md、…-mapper-NN.md  # 仅当同时 --table-callchains-up-extra
+    callchain-down-rest/<Controller FQCN>/callchain-down-rest-<METHOD>_<path>.md  # step4；含 step6 节点字段（文末 JSON）
   graphs/
     rest-map.mmd                  # step2 / A2（除非 --skip-rest-map）
 ```
@@ -558,8 +559,8 @@ design-out/
 3. **step3 / A2.5** `tables-manifest.json`（`--skip-table-manifest` 则跳过）
 4. **step1 补充 / A3** `symbols-by-package.json`（`--skip-symbols` 则跳过；**无 JDTLS**）
 5. **step5′ 关键字向上**：`--queries` 且**未** `--skip-callchain` → `data/callchain-up-*.md`
-6. **step5 按表向上**：`--table-callchains-up` 且**未** `--skip-callchain` → `data/callchain-up-table-*.md`、根目录 **`table-callchains-summary.json`**
-7. **step4 REST 向下**：`--rest-callchains-down` 且**未** `--skip-callchain` → `data/callchain-down-rest-*.md`、**`rest-callchains-down-summary.json`**。**锚点**：若存在 ``…service.impl.XxxServiceImpl`` 则从实现类起算，否则 Controller。可用 **`--max-rest-down-endpoints N`** 限流
+6. **step5 按表向上**：`--table-callchains-up` 且**未** `--skip-callchain` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、根目录 **`table-callchains-summary.json`**；若再加 **`--table-callchains-up-extra`** → 同目录下另含 `*-sql-NN.md`、`*-mapper-NN.md`（上限见 `--max-table-up-extra-anchors`）
+7. **step4 REST 向下**：`--rest-callchains-down` 且**未** `--skip-callchain` → `data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md`、**`rest-callchains-down-summary.json`**。**锚点**：若存在 ``…service.impl.XxxServiceImpl`` 则从实现类起算，否则 Controller。可用 **`--max-rest-down-endpoints N`** 限流
 
    **JDTLS**：bundle 内 **step5′、step5、step4** 在至少启用其一且未 `--skip-callchain` 时 **共用一次 JVM**。单独执行 `jdtls-lsp callchain-up` / `callchain-down` 仍为**每次命令**各启 JDTLS（适合 **step7**）。
 8. **step6**：`--business-summary`（在 callchain 子步骤之后）：合并 `keyMethods` → **`business.md`**；可与 **`--skip-callchain`** 同用。摘要 JSON 含 **`businessSummary`**。
@@ -578,13 +579,15 @@ design-out/
 | `--skip-callchain` | 关 | **关闭所有**需 JDTLS 的调用链：`--queries`、`--table-callchains-up`、**`--rest-callchains-down`** |
 | `--queries` | 空 | 逗号分隔关键字；每个关键字输出一个 `data/callchain-up-*.md`（Markdown，文末嵌入 JSON）；与 `callchain-up` 子命令的关键字规则一致 |
 | `--table-callchains-up` | 关 | 按表自动向上调用链；依赖 `tables-manifest` 中的蛇形表名；与 `--skip-callchain` 同时指定则跳过 |
+| `--table-callchains-up-extra` | 关 | **须与** `--table-callchains-up` **同用**：额外对 manifest 中 JDBC 字符串 SQL（`*.java`）与 MyBatis XML→Mapper 方法跑 callchain-up（`*-sql-NN.md`、`*-mapper-NN.md`） |
+| `--max-table-up-extra-anchors` | `24` | 与上一项联用：每张表 **SQL 与 MyBatis 各自**最多几条起点；`0` 表示不限制 |
 | `--max-table-callchain-scan` | `12000` | 为每张表在仓库内最多检查多少个 `*ServiceImpl.java` 路径以查找 `EntityRepository` 注入 |
 | `--rest-callchains-down` | 关 | 对 `rest-map` 中每个 HTTP 端点跑 `callchain-down`；与 `--skip-callchain` 同时指定则跳过 |
 | `--max-rest-down-endpoints` | `0` | 只处理前 N 个端点（`rest-map` 中 `endpoints` 顺序）；`0` 表示**不限制**（端点多时耗时会很长） |
 | `--rest-down-depth` | `16` | 向下 BFS 最大深度（同 `callchain-down --max-depth`） |
 | `--rest-down-max-nodes` | `500` | 向下子图节点上限（同 `callchain-down --max-nodes`） |
 | `--rest-down-max-branches` | `48` | 每层 outgoing 分支上限（同 `callchain-down --max-branches`） |
-| `--business-summary` | 关 | **step6**（阶段 D）：合并 `data/callchain-down-rest-*.md`（或遗留 `.json`）的 `keyMethods` → 根目录 `business.md`。可与 **`--skip-callchain`** 同用（只扫描已有报告；无 `keyMethods` 时会现场补算）。**不依赖**本轮是否 `--rest-callchains-down`，但无匹配文件时 `mergedCount` 为 0 |
+| `--business-summary` | 关 | **step6**（阶段 D）：递归合并 `data/callchain-down-rest/**/callchain-down-rest-*.md`（及历史上 `data/` 根下同名扁平 `.md`/`.json`）的 `keyMethods` → 根目录 `business.md`。可与 **`--skip-callchain`** 同用（只扫描已有报告；无 `keyMethods` 时会现场补算）。**不依赖**本轮是否 `--rest-callchains-down`，但无匹配文件时 `mergedCount` 为 0 |
 | `--tables-file` | 无 | 每行一个规范表名（`#` 注释）；与 `reverse-design db-tables` 相同语义，用于 `canonicalTables` / `unresolvedTables` |
 | `--tables` | 空 | 逗号分隔表名，与 `--tables-file` 合并 |
 | `--strict-tables-only` | 关 | `tables-manifest.json` 中不列出 `extractedOnly`（仍参与抽取与锚点） |
@@ -609,7 +612,7 @@ design-out/
 
 **`--business-summary`（step6 / 阶段 D）**：
 
-- 依赖 **`data/callchain-down-rest-*.md`**（或遗留 `.json`）：通常与 **`--rest-callchains-down`** 同次或前次 bundle 产物配合使用。
+- 依赖 **`data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`**（或遗留扁平 `.md`/`.json`）：通常与 **`--rest-callchains-down`** 同次或前次 bundle 产物配合使用。
 - **独立使用**：`--skip-callchain --business-summary` 仅根据输出目录里**已有**的向下链 JSON 生成/覆盖 `business.md`，适合 CI 分步或只刷新聚合视图。
 - 单条 `callchain-down` JSON 内已含节点级 **`businessScore` / `businessCandidate` / `businessSignals`** 与顶层 **`keyMethods`**；`business.md` 为跨端点合并去重后的可读列表。
 
@@ -751,13 +754,15 @@ summ = run_design_bundle(
     tables_inline="",
     strict_tables_only=False,
     table_callchains_up=False,  # True 等价 CLI --table-callchains-up；按蛇形表跑 callchain-up（需 skip_callchain=False）
+    table_callchains_up_extra=False,  # True 等价 CLI --table-callchains-up-extra（须与 table_callchains_up 同开）：JDBC 字符串 + MyBatis Mapper 额外锚点
+    max_table_up_extra_anchors=24,  # 与 extra 联用：SQL 与 MyBatis 各自条数上限（0=不限制）
     max_table_callchain_java_scan=12_000,
     rest_callchains_down=False,  # True 等价 CLI --rest-callchains-down；按 rest-map 跑 callchain-down（bundle 内与其它 callchain 步共用 JDTLS）
     max_rest_down_endpoints=0,  # >0 时只处理前 N 个端点
     rest_down_max_depth=16,
     rest_down_max_nodes=500,
     rest_down_max_branches=48,
-    business_summary=False,  # True：写 business.md（合并 callchain-down-rest-*.md）
+    business_summary=False,  # True：写 business.md（合并 callchain-down-rest 子目录内及 data 根下 callchain-down-rest-*.md）
     jdtls_path=None,
     glob_pattern="**/src/main/java/**/*.java",
     max_symbol_files=200,

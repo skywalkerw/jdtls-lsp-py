@@ -8,9 +8,13 @@
 from __future__ import annotations
 
 from .format import (
+    apply_manifest_anchor_to_callchain_markdown,
+    apply_rest_map_anchor_to_downchain_markdown,
     extract_trace_payload_dict,
     format_callchain_markdown,
     format_downchain_markdown,
+    manifest_anchor_markdown_lines,
+    rest_map_anchor_markdown_lines,
     summarize_trace_down_json,
     summarize_trace_up_json,
 )
@@ -21,10 +25,14 @@ from .trace import (
 )
 
 __all__ = [
+    "apply_manifest_anchor_to_callchain_markdown",
+    "apply_rest_map_anchor_to_downchain_markdown",
     "extract_top_entry_info",
     "extract_trace_payload_dict",
     "format_callchain_markdown",
     "format_downchain_markdown",
+    "manifest_anchor_markdown_lines",
+    "rest_map_anchor_markdown_lines",
     "summarize_trace_down_json",
     "summarize_trace_up_json",
     "trace_call_chain_sync",

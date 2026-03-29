@@ -10,6 +10,7 @@ from typing import Any
 
 from jdtls_lsp.java_grep import SKIP_DIR_PARTS
 from jdtls_lsp.logutil import get_logger
+from jdtls_lsp.reverse_design.java_enclosing_method import java_enclosing_method_at_line
 
 _log = get_logger("reverse_design.table_manifest")
 
@@ -18,6 +19,18 @@ _TABLE_ANN = re.compile(
     r"@Table\s*\(\s*(?:name\s*=\s*)?[\"']([^\"']+)[\"']",
     re.MULTILINE,
 )
+
+
+def extract_jpa_table_names_from_java(text: str) -> list[str]:
+    """从源码中提取 ``@Table( … name = '…' … )`` 的物理表名（不含 ``@TableField``）。"""
+    names: list[str] = []
+    for m in _TABLE_ANN.finditer(text):
+        raw = m.group(1).strip()
+        if "." in raw:
+            raw = raw.split(".")[-1]
+        names.append(raw)
+    return names
+
 
 _STRING_DOUBLE = re.compile(r"\"(?:[^\"\\]|\\.)*\"")
 _STRING_SINGLE = re.compile(r"'(?:[^'\\]|\\.)*'")
@@ -29,6 +42,9 @@ _SQL_TABLE = re.compile(
 )
 
 _MYBATIS_TABLE_ATTR = re.compile(r"\btable\s*=\s*[\"']([^\"']+)[\"']", re.I)
+
+_PHYSICAL_TABLE_TOKEN = re.compile(r"^[a-z][a-z0-9_]*$")
+_PASCAL_JAVA_TYPE = re.compile(r"^[A-Z][a-zA-Z0-9]+$")
 
 _SQL_RESERVED = frozenset(
     {
@@ -77,6 +93,27 @@ _SQL_RESERVED = frozenset(
         "UPDATE",
     }
 )
+
+
+def normalize_table_token_to_physical(name: str) -> str:
+    """将 manifest/代码中出现的表名字符串统一为**蛇形物理表键**（小写），便于 ``MonitorData`` 与 ``monitor_data`` 同组。
+
+    - 已是蛇形 ``[a-z][a-z0-9_]*`` → 转小写。
+    - **PascalCase**（实体/JPQL 类名）→ 驼峰转蛇形后再小写。
+    - 其它情况 → ``str`` 小写（兜底归并）。
+    """
+    t = str(name).strip()
+    if not t:
+        return t
+    if _PHYSICAL_TABLE_TOKEN.match(t):
+        return t.lower()
+    if _PASCAL_JAVA_TYPE.match(t):
+        s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", t)
+        s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
+        snake = s2.lower()
+        if _PHYSICAL_TABLE_TOKEN.match(snake):
+            return snake
+    return t.lower()
 
 
 def _skip_path(p: Path) -> bool:
@@ -176,7 +213,8 @@ def _scan_java_file(fp: Path, rel: str) -> list[dict[str, Any]]:
         return hits
     if text.startswith("\ufeff"):
         text = text[1:]
-    for line_no, line in enumerate(text.splitlines(), start=1):
+    lines = text.splitlines()
+    for line_no, line in enumerate(lines, start=1):
         if "@TableField" in line:
             pass
         if "@Table(" in line and "@TableField" not in line:
@@ -198,16 +236,18 @@ def _scan_java_file(fp: Path, rel: str) -> list[dict[str, Any]]:
             lit = sm.group(0)[1:-1]
             lit_unesc = bytes(lit, "utf-8").decode("unicode_escape", errors="replace")
             for tbl in _tables_in_sql_fragment(lit_unesc):
-                hits.append(
-                    {
-                        "table": tbl,
-                        "source": "jdbc_sql_literal",
-                        "confidence": "medium",
-                        "file": rel,
-                        "line": line_no,
-                        "snippet": line.strip()[:240],
-                    }
-                )
+                m_line, m_name = java_enclosing_method_at_line(lines, line_no)
+                row: dict[str, Any] = {
+                    "table": tbl,
+                    "source": "jdbc_sql_literal",
+                    "confidence": "medium",
+                    "file": rel,
+                    "line": line_no,
+                    "snippet": line.strip()[:240],
+                    "javaMethod": m_name,
+                    "javaMethodLine": m_line,
+                }
+                hits.append(row)
     return hits
 
 
@@ -261,8 +301,10 @@ def build_table_manifest(
     合并 **用户表清单**（权威规范名）与 **代码轻量抽取**。
 
     - ``canonicalTables``：用户给定顺序（文件 + 行内 ``--tables``）；若均未提供则为抽取到的表名排序。
-    - ``extractedHits``：全部命中（含 source/confidence）。
+    - ``extractedHits``：全部命中（含 source/confidence）；``jdbc_sql_literal`` 另含 ``javaMethod`` / ``javaMethodLine``（包围方法简单名与签名行号）。
     - ``anchorsByTable``：按规范表名聚合命中（键与 ``canonicalTables`` 对齐，大小写不敏感归并）。
+    - ``anchorsByPhysicalTable``：按**物理蛇形表键**聚合（``monitor_data`` 与 ``MonitorData`` 等同组）；同 ``file``+``line``+``source`` 只保留一条。
+    - ``canonicalPhysicalTables``：由 ``canonicalTables`` 去重得到的物理表键列表（顺序保留）。
     - ``unresolvedTables``：用户清单中有、但 **无任何命中** 的表。
     - ``extractedOnly``：有命中但 **不在用户清单** 中的表（``strict_tables_only`` 时仍计算但可从展示侧隐藏）。
     """
@@ -318,6 +360,31 @@ def build_table_manifest(
         row["tableAsFound"] = raw_t
         anchors_by_table[key].append(row)
 
+    anchors_by_physical: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    seen_phys_key: set[tuple[str, str, int, str]] = set()
+    for h in extracted_hits:
+        raw_t = str(h["table"])
+        phys = normalize_table_token_to_physical(raw_t)
+        f = str(h.get("file", ""))
+        line_no = int(h.get("line", 0) or 0)
+        src = str(h.get("source", ""))
+        dk = (phys, f.replace("\\", "/"), line_no, src)
+        if dk in seen_phys_key:
+            continue
+        seen_phys_key.add(dk)
+        prow = {k: v for k, v in h.items() if k != "table"}
+        prow["tableAsFound"] = raw_t
+        prow["physicalTable"] = phys
+        anchors_by_physical[phys].append(prow)
+
+    canonical_physical: list[str] = []
+    seen_pc: set[str] = set()
+    for t in canonical_list:
+        p = normalize_table_token_to_physical(t)
+        if p.casefold() not in seen_pc:
+            seen_pc.add(p.casefold())
+            canonical_physical.append(p)
+
     hit_norms = {str(h["table"]).casefold() for h in extracted_hits}
     if ut:
         unresolved = [t for t in ut if t.casefold() not in hit_norms]
@@ -339,18 +406,23 @@ def build_table_manifest(
         "tablesInline": tables_inline.strip() or None,
         "strictTablesOnly": strict_tables_only,
         "canonicalTables": canonical_list,
+        "canonicalPhysicalTables": canonical_physical,
         "extractedHitCount": len(extracted_hits),
         "javaFilesScanned": len(java_files),
         "xmlFilesScanned": len(xml_files),
         "extractedHits": extracted_hits,
         "anchorsByTable": {k: v for k, v in sorted(anchors_by_table.items(), key=lambda x: x[0].casefold())},
+        "anchorsByPhysicalTable": {
+            k: v for k, v in sorted(anchors_by_physical.items(), key=lambda x: x[0].casefold())
+        },
         "unresolvedTables": unresolved,
         "extractedOnly": [] if strict_tables_only else extracted_only_names,
     }
 
     _log.info(
-        "table manifest: canonical=%s hits=%s unresolved=%s extractedOnly=%s",
+        "table manifest: canonical=%s physicalGroups=%s hits=%s unresolved=%s extractedOnly=%s",
         len(canonical_list),
+        len(anchors_by_physical),
         len(extracted_hits),
         len(unresolved),
         len(extracted_only_names),
