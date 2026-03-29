@@ -8,7 +8,7 @@ import queue
 import threading
 from typing import Any, Callable
 
-from jdtls_lsp.logutil import format_payload, redact_lsp_params
+from jdtls_lsp.logutil import format_lsp_response, format_payload, redact_lsp_params
 
 _log = logging.getLogger("jdtls_lsp.jrpc")
 
@@ -81,9 +81,12 @@ class JsonRpcConnection:
                 resp["result"] = result
             else:
                 resp["result"] = None
+            # 禁止在持有 _lock 时写 stdin：主线程可能在 didOpen 等大写入里持锁阻塞，
+            # 读线程若此时抢锁写 server-request 的响应，会与 JDTLS 形成死锁（数小时无进展）。
             with self._lock:
-                if not self._closed:
-                    _write_message(self._writer, resp)
+                closed = self._closed
+            if not closed:
+                _write_message(self._writer, resp)
             return
         if "id" in msg and ("result" in msg or "error" in msg):
             qid = msg["id"]
@@ -104,17 +107,21 @@ class JsonRpcConnection:
             payload: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
             if params is not None:
                 payload["params"] = params
-            _write_message(self._writer, payload)
+        _write_message(self._writer, payload)
         try:
             resp = q.get(timeout=timeout)
+        except queue.Empty:
+            _log.warning("LSP request timeout method=%s after %.1fs", method, timeout)
+            raise TimeoutError(f"LSP request {method} timed out after {timeout}s") from None
         finally:
-            self._pending.pop(req_id, None)
+            with self._lock:
+                self._pending.pop(req_id, None)
         if "error" in resp:
             err = resp["error"]
             _log.warning("LSP request failed %s: %s", method, format_payload(err))
             raise RuntimeError(str(err))
         result = resp.get("result")
-        _log.debug("LSP -> %s result=%s", method, format_payload(result))
+        _log.debug("LSP -> %s result=%s", method, format_lsp_response(method, result))
         return result
 
     def send_notification(self, method: str, params: dict[str, Any] | list[Any] | None = None) -> None:
@@ -126,7 +133,7 @@ class JsonRpcConnection:
             payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
             if params is not None:
                 payload["params"] = params
-            _write_message(self._writer, payload)
+        _write_message(self._writer, payload)
 
     def close(self) -> None:
         with self._lock:

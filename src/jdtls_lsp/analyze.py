@@ -11,6 +11,7 @@ from typing import Any
 from jdtls_lsp.client import LSPClient, create_client
 from jdtls_lsp.java_grep import keyword_search_variants
 from jdtls_lsp.logutil import format_payload
+from jdtls_lsp.lsp_env import document_symbol_timeout_s
 
 _log = logging.getLogger("jdtls_lsp.analyze")
 
@@ -132,7 +133,18 @@ def analyze_sync(
                 return msg
             client.open_file(str(abs_path))
             uri = abs_path.as_uri()
-            result = client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+            ds_timeout = document_symbol_timeout_s()
+            _log.info("documentSymbol timeout=%.0fs (env JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT)", ds_timeout)
+            try:
+                result = client.request(
+                    "textDocument/documentSymbol",
+                    {"textDocument": {"uri": uri}},
+                    timeout=ds_timeout,
+                )
+            except TimeoutError:
+                msg = f"错误: documentSymbol 在 {ds_timeout:.0f}s 内无响应（JDTLS 可能在该文件上过慢或卡住）: {file_path}"
+                _log.warning("%s", msg)
+                return msg
             result = _norm_list(result)
 
         elif op == "workspaceSymbol":

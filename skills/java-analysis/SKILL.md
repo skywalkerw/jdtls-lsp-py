@@ -3,10 +3,10 @@ name: java-analysis
 description: >-
   Documents jdtls-lsp analyze subcommand and analyze_sync API: documentSymbol,
   workspaceSymbol, definition, references, hover, implementation, incomingCalls,
-  outgoingCalls. Instructs agents to run jdtls-lsp analyze --help when unsure
-  of CLI flags. Use when the user asks for LSP 分析, jdtls-lsp analyze, Java
-  symbols, go-to-definition, find references, call hierarchy one-hop, or
-  LiteClaw lsp_java_analyze equivalents without full callchain tracing.
+  outgoingCalls, typeHierarchy. Instructs agents to run jdtls-lsp analyze --help
+  when unsure of CLI flags. Use when the user asks for LSP 分析, jdtls-lsp analyze,
+  Java symbols, go-to-definition, find references, call hierarchy one-hop, type
+  hierarchy, or LiteClaw lsp_java_analyze equivalents without full callchain tracing.
 ---
 
 # Java LSP 单步分析（jdtls-lsp `analyze`）
@@ -14,14 +14,14 @@ description: >-
 ## 智能体指引
 
 - **不要凭记忆编造 CLI 参数或默认值**。需要确认选项、子命令或当前版本行为时，**先在本机执行 `--help`**，再组命令或回答用户。
-- 推荐命令（任选其一；未全局安装时用 `PYTHONPATH=src python3 -m jdtls_lsp.cli`）：
+- 推荐命令（任选其一；未全局安装时与仓库 **README** 一致，优先 `PYTHONPATH=src python3 -m jdtls_lsp`；`python3 -m jdtls_lsp.cli` 等价）：
 
 ```bash
 jdtls-lsp --help
 jdtls-lsp analyze --help
-# 或
-PYTHONPATH=src python3 -m jdtls_lsp.cli --help
-PYTHONPATH=src python3 -m jdtls_lsp.cli analyze --help
+# 或（开发 / 未 pip 安装）
+PYTHONPATH=src python3 -m jdtls_lsp --help
+PYTHONPATH=src python3 -m jdtls_lsp analyze --help
 ```
 
 ## 何时使用
@@ -71,13 +71,13 @@ jdtls-lsp analyze <project> <operation> [选项]
 
 ```bash
 cd /path/to/jdtls-lsp-py
-PYTHONPATH=src python3 -m jdtls_lsp.cli analyze "$PROJECT" documentSymbol \
+PYTHONPATH=src python3 -m jdtls_lsp analyze "$PROJECT" documentSymbol \
   --file src/main/java/com/example/App.java
 
-PYTHONPATH=src python3 -m jdtls_lsp.cli analyze "$PROJECT" references \
+PYTHONPATH=src python3 -m jdtls_lsp analyze "$PROJECT" references \
   --file src/main/java/com/example/Foo.java --line 42 --char 1
 
-PYTHONPATH=src python3 -m jdtls_lsp.cli analyze "$PROJECT" workspaceSymbol \
+PYTHONPATH=src python3 -m jdtls_lsp analyze "$PROJECT" workspaceSymbol \
   --query 'com.example.UserService|UserService'
 ```
 

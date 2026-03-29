@@ -88,12 +88,14 @@ class LSPClient:
             )
             self._files[str(p)] = 0
 
-    def request(self, method: str, params: dict[str, Any]) -> Any:
-        return self._conn.send_request(method, params, timeout=120.0)
+    def request(self, method: str, params: dict[str, Any], *, timeout: float | None = None) -> Any:
+        return self._conn.send_request(method, params, timeout=120.0 if timeout is None else timeout)
 
     def shutdown(self) -> None:
         try:
             self._conn.send_request("shutdown", None, timeout=30.0)
+        except KeyboardInterrupt:
+            _log.warning("LSP shutdown: KeyboardInterrupt during shutdown request; terminating JVM")
         except Exception:
             pass
         try:

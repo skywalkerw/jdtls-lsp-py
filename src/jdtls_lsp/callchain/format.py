@@ -1,6 +1,6 @@
 """调用链报告输出：将 trace 产出的 JSON 转为 Markdown（向上 / 向下）。
 
-与 LSP 追踪逻辑解耦；后续可在本模块或 ``jdtls_lsp.output`` 下扩展 HTML、Mermaid 等格式。
+属于 ``jdtls_lsp.callchain`` 包，与 ``trace`` 子模块（LSP 包装追踪）解耦；可在此扩展 HTML、Mermaid 等格式。
 """
 
 from __future__ import annotations
@@ -13,6 +13,9 @@ from typing import Any
 
 _STOP_REASON_LABEL: dict[str, str] = {
     "rest_endpoint": "REST 接口（检测到 @RequestMapping 等）",
+    "message_listener": "消息消费者（@KafkaListener / @RabbitListener 等，见节点 listenerMarkers）",
+    "scheduled_task": "定时任务（@Scheduled / Quartz execute / @XxlJob 等）",
+    "async_method": "异步方法（Spring `@Async`，见节点 asyncMarkers）",
     "abstract_class": "abstract 类",
     "max_depth": "达到 max_depth",
     "no_incoming": "无上游调用（LSP incomingCalls 为空）",
@@ -150,6 +153,22 @@ def _up_entry_merge_key_and_suffix(
     jd_tail = ""
     if isinstance(te.get("javadoc"), str) and str(te.get("javadoc")).strip():
         jd_tail = str(te.get("javadoc")).strip().splitlines()[0][:160]
+
+    if sr == "message_listener":
+        markers = [str(x) for x in (top.get("listenerMarkers") or []) if str(x).strip()]
+        mkey: tuple[Any, ...] = ("msg", sr, tuple(markers), top_s)
+        mtxt = ", ".join(markers) if markers else "消息监听"
+        return mkey, " · ".join([top_s, f"**消息/队列** `{mtxt}`", f"终止 `{sr}`"])
+    if sr == "scheduled_task":
+        markers = [str(x) for x in (top.get("scheduledMarkers") or []) if str(x).strip()]
+        skey: tuple[Any, ...] = ("sched", sr, tuple(markers), top_s)
+        stxt = ", ".join(markers) if markers else "定时任务"
+        return skey, " · ".join([top_s, f"**定时** `{stxt}`", f"终止 `{sr}`"])
+    if sr == "async_method":
+        markers = [str(x) for x in (top.get("asyncMarkers") or []) if str(x).strip()]
+        akey: tuple[Any, ...] = ("async", sr, tuple(markers), top_s)
+        atxt = ", ".join(markers) if markers else "@Async"
+        return akey, " · ".join([top_s, f"**异步** `{atxt}`", f"终止 `{sr}`"])
 
     if te.get("restSummary") or te.get("restPath") or te.get("httpMethod"):
         ep = _rest_endpoint_display(te)
@@ -407,13 +426,13 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
         "```",
         "起点方法（实现层）",
         "    └── LSP callHierarchy/incomingCalls 向上取直接调用方",
-        "            └── 重复直至 REST / abstract / 无上游 / 环 / max_depth",
+        "            └── 重复直至 REST / 消息监听 / 定时任务 / @Async / abstract / 无上游 / 环 / max_depth",
         "```",
         "",
         "## 概要说明",
         "",
-        "本报告为 **向上** 调用链：从起点方法沿 LSP **incomingCalls** 向上追踪，直至 REST、abstract、无上游、环或深度上限。",
-        "**阅读重点**：下一节「调用起点入口」汇总每条链在系统边界上的 **最上游入口**（通常为 HTTP/REST；否则为无上游时的顶层方法）。",
+        "本报告为 **向上** 调用链：从起点方法沿 LSP **incomingCalls** 向上追踪，直至 REST、**消息队列消费者**、**定时任务**、**`@Async` 异步方法**（均由方法上方窗口内注解/签名启发式识别）、abstract、无上游、环或深度上限。",
+        "**阅读重点**：下一节「调用起点入口」汇总每条链在系统边界上的 **最上游入口**（常见为 HTTP/REST；亦可能为消息监听、`@Scheduled`、**`@Async`**；否则为无上游时的顶层方法）。",
         "",
         f"- **链数**: {count}",
         "- **追踪方向**: 自内向外（被调方法 → 调用者 → …）",
@@ -442,6 +461,7 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
         lines.append(_ascii_tree_for_chain([x for x in nodes if isinstance(x, dict)]))
         lines.append("```")
         lines.append("")
+        top: dict[str, Any] = nodes[-1] if nodes and isinstance(nodes[-1], dict) else {}
         je = ch.get("jdtlsError")
         if isinstance(je, str) and je.strip() and sr == "jdtls_error":
             lines.append("#### JDTLS 错误（incomingCalls）")
@@ -450,25 +470,52 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
             lines.append("")
         te = ch.get("topEntry")
         if isinstance(te, dict) and te:
-            lines.append("#### 该链 REST / JavaDoc（补充）")
-            lines.append("")
-            n_sub = 1
-            ep = _rest_endpoint_display(te)
-            if ep:
-                lines.append(f"{n_sub}. **REST**: `{ep}`")
-                n_sub += 1
-            rs = te.get("restSummary")
-            cb = te.get("classBasePath")
-            if isinstance(cb, str) and cb.strip() and not (isinstance(rs, str) and rs.strip()):
-                lines.append(f"{n_sub}. **类级 base**: `{cb.strip()}`")
-                n_sub += 1
-            jd = te.get("javadoc")
-            if isinstance(jd, str) and jd.strip():
-                lines.append(f"{n_sub}. **JavaDoc**:")
+            lm = te.get("listenerMarkers")
+            sm = te.get("scheduledMarkers")
+            az = te.get("asyncMarkers")
+            has_rest = bool(
+                _rest_endpoint_display(te)
+                or te.get("restSummary")
+                or te.get("restPath")
+                or te.get("httpMethod")
+                or te.get("classBasePath")
+                or te.get("javadoc")
+            )
+            if isinstance(lm, list) and lm:
+                lines.append("#### 该链 消息/队列（补充）")
                 lines.append("")
-                for jl in jd.strip().splitlines():
-                    lines.append(f"  {jl}")
-            lines.append("")
+                lines.append(f"1. **监听**: `{', '.join(str(x) for x in lm)}`")
+                lines.append("")
+            elif isinstance(sm, list) and sm:
+                lines.append("#### 该链 定时任务（补充）")
+                lines.append("")
+                lines.append(f"1. **调度**: `{', '.join(str(x) for x in sm)}`")
+                lines.append("")
+            elif isinstance(az, list) and az:
+                lines.append("#### 该链 异步（补充）")
+                lines.append("")
+                lines.append(f"1. **注解**: `{', '.join(str(x) for x in az)}`")
+                lines.append("")
+            elif has_rest or top.get("isRest"):
+                lines.append("#### 该链 REST / JavaDoc（补充）")
+                lines.append("")
+                n_sub = 1
+                ep = _rest_endpoint_display(te)
+                if ep:
+                    lines.append(f"{n_sub}. **REST**: `{ep}`")
+                    n_sub += 1
+                rs = te.get("restSummary")
+                cb = te.get("classBasePath")
+                if isinstance(cb, str) and cb.strip() and not (isinstance(rs, str) and rs.strip()):
+                    lines.append(f"{n_sub}. **类级 base**: `{cb.strip()}`")
+                    n_sub += 1
+                jd = te.get("javadoc")
+                if isinstance(jd, str) and jd.strip():
+                    lines.append(f"{n_sub}. **JavaDoc**:")
+                    lines.append("")
+                    for jl in jd.strip().splitlines():
+                        lines.append(f"  {jl}")
+                lines.append("")
 
     lines.extend(
         [
@@ -628,6 +675,35 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
             lines.append(f"{min(len(other_non_accessor), cap) + 1}. … 其余 **{len(other_non_accessor) - cap}** 条略（见 `nodes`）")
         lines.append("")
 
+    km = payload.get("keyMethods")
+    if isinstance(km, list) and km:
+        lines.extend(
+            [
+                "## 关键业务候选（阶段 D）",
+                "",
+                "_启发式：Service 层、子图内可达持久化边界、`@Transactional`、多上游入度等；节点字段见 JSON ``businessScore`` / ``businessCandidate`` / ``businessSignals``。_",
+                "",
+            ]
+        )
+        cap_km = 28
+        for j, r in enumerate(km[:cap_km], start=1):
+            if not isinstance(r, dict):
+                continue
+            c = str(r.get("class", "?"))
+            m = str(r.get("method", ""))
+            if len(m) > 96:
+                m = m[:93] + "..."
+            f = str(r.get("file", ""))
+            ln = r.get("line", "")
+            sc = r.get("score", "")
+            sig = r.get("signals") if isinstance(r.get("signals"), list) else []
+            sig_s = ", ".join(str(x) for x in sig[:8])
+            lines.append(f"{j}. `{c}.{m}` `{f}:{ln}` — **score** `{sc}` — {sig_s}")
+        if len(km) > cap_km:
+            lines.append("")
+            lines.append(f"… 共 **{len(km)}** 条，余下见 JSON ``keyMethods``。")
+        lines.append("")
+
     lines.extend(
         [
             "## 边列表（from → to，前 200 条）",
@@ -644,7 +720,107 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_TRACE_MD_JSON_SECTION = "## 原始 JSON"
+
+
+def extract_trace_payload_dict(raw: str) -> dict[str, Any]:
+    """
+    解析 **纯 JSON** 的调用链报告，或 **Markdown** 报告末尾 ``## 原始 JSON`` 代码块内的嵌入 JSON
+    （与 ``format_downchain_markdown`` / ``format_callchain_markdown`` 输出一致）。
+
+    用于 design 默认落盘 Markdown 时，仍能从同一文件恢复结构化 ``payload``（摘要、``keyMethods`` 合并等）。
+    """
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("empty trace output")
+    if s.startswith("错误:"):
+        raise ValueError(s[:800])
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    pos = s.rfind(_TRACE_MD_JSON_SECTION)
+    chunk = s[pos:] if pos >= 0 else s
+    fence = chunk.find("```json")
+    if fence < 0:
+        raise ValueError("no embedded ```json block (expected section 原始 JSON)")
+    nl = chunk.find("\n", fence)
+    if nl < 0:
+        raise ValueError("malformed json fence")
+    body_start = nl + 1
+    fence_end = chunk.find("```", body_start)
+    if fence_end < 0:
+        raise ValueError("unclosed ```json fence")
+    js = chunk[body_start:fence_end].strip()
+    obj2 = json.loads(js)
+    if not isinstance(obj2, dict):
+        raise ValueError("embedded payload is not a JSON object")
+    return obj2
+
+
+def summarize_trace_down_json(raw: str) -> dict[str, Any]:
+    """
+    从 **callchain-down** 的 JSON 文本 **或** 同内容的 Markdown（含嵌入 JSON）提取简短摘要；
+    失败时含 ``error`` 键。
+    """
+    raw = raw.strip()
+    if raw.startswith("错误:"):
+        return {"error": raw[:800]}
+    try:
+        obj = extract_trace_payload_dict(raw)
+    except (ValueError, json.JSONDecodeError) as e:
+        return {"error": f"parse: {e}"}
+    stats = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
+    return {
+        "nodeCount": stats.get("nodeCount"),
+        "edgeCount": stats.get("edgeCount"),
+        "stopReason": obj.get("stopReason"),
+        "jdtlsErrors": obj.get("jdtlsErrors") or [],
+    }
+
+
+def summarize_trace_up_json(raw: str) -> dict[str, Any]:
+    """
+    从 **callchain-up** 的 JSON 文本 **或** Markdown（含嵌入 JSON）提取简短摘要；失败时含 ``error`` 键。
+    """
+    raw = raw.strip()
+    if raw.startswith("错误:"):
+        return {"error": raw[:500]}
+    try:
+        obj = extract_trace_payload_dict(raw)
+    except (ValueError, json.JSONDecodeError) as e:
+        return {"error": f"parse: {e}"}
+    chains = obj.get("chains")
+    n = len(chains) if isinstance(chains, list) else 0
+    tops: list[dict[str, Any]] = []
+    if isinstance(chains, list):
+        for c in chains[:12]:
+            if not isinstance(c, dict):
+                continue
+            ch = c.get("chain")
+            if isinstance(ch, list) and ch:
+                top = ch[-1]
+                if isinstance(top, dict):
+                    tops.append(
+                        {
+                            "stopReason": c.get("stopReason"),
+                            "class": top.get("class"),
+                            "method": (top.get("method") or "")[:120],
+                            "isRest": top.get("isRest"),
+                        }
+                    )
+    return {
+        "chainCount": obj.get("chainCount", n),
+        "sampleTops": tops,
+    }
+
+
 __all__ = [
+    "extract_trace_payload_dict",
     "format_callchain_markdown",
     "format_downchain_markdown",
+    "summarize_trace_down_json",
+    "summarize_trace_up_json",
 ]

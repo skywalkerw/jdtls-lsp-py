@@ -41,6 +41,47 @@ def format_payload(obj: Any, max_chars: int | None = None) -> str:
     return s[: mc - 3] + "..."
 
 
+def format_lsp_response(method: str, result: Any) -> str:
+    """
+    Format LSP method results for DEBUG logs without ``json.dumps`` of multi‑MB payloads.
+
+    Full ``documentSymbol`` / large ``workspace/symbol`` lists would otherwise allocate
+    huge strings and block stderr (pipe backpressure), making the CLI look hung under ``-vv``.
+    """
+    if result is None:
+        return "null"
+    if method == "textDocument/documentSymbol":
+        lst = result if isinstance(result, list) else ([result] if isinstance(result, dict) else [])
+        if not lst:
+            return format_payload(result)
+        n = len(lst)
+        names: list[str] = []
+        for x in lst[:16]:
+            if isinstance(x, dict):
+                names.append(str(x.get("name", "?")))
+            else:
+                names.append("?")
+        more = f" …(+{n - len(names)} more)" if n > len(names) else ""
+        return f"({n} symbols; names: {names}{more})"
+    if method == "initialize" and isinstance(result, dict):
+        caps = result.get("capabilities")
+        if isinstance(caps, dict):
+            ks = sorted(caps.keys())
+            head = ks[:24]
+            extra = f" …(+{len(ks) - len(head)} keys)" if len(ks) > len(head) else ""
+            return f"{{capabilities: {len(ks)} keys [{', '.join(head)}{extra}]}}"
+        return format_payload(result, max_chars=4000)
+    if method == "workspace/symbol" and isinstance(result, list) and len(result) > 12:
+        snips: list[str] = []
+        for x in result[:12]:
+            if isinstance(x, dict):
+                snips.append(str(x.get("name", "?")))
+            else:
+                snips.append("?")
+        return f"({len(result)} symbols; sample: {snips} …)"
+    return format_payload(result)
+
+
 def _redact_text_document(obj: dict[str, Any]) -> dict[str, Any]:
     out = deepcopy(obj)
     td = out.get("textDocument")
@@ -105,7 +146,13 @@ def setup_logging(
     log.setLevel(level)
     log.propagate = False
     if not log.handlers:
-        h = logging.StreamHandler(stream or sys.stderr)
+
+        class _FlushStreamHandler(logging.StreamHandler):
+            def emit(self, record: logging.LogRecord) -> None:
+                super().emit(record)
+                self.flush()
+
+        h = _FlushStreamHandler(stream or sys.stderr)
         h.setLevel(level)
         h.setFormatter(
             logging.Formatter(

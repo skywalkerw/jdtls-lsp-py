@@ -13,14 +13,15 @@ description: >-
 ## 智能体指引
 
 - **不要凭记忆编造 CLI 参数或默认值**。需要确认选项、入口互斥或 grep 过滤开关时，**先在本机执行 `--help`**，再组命令或回答用户。
-- 推荐命令（任选其一；未全局安装时用 `PYTHONPATH=src python3 -m jdtls_lsp.cli`）：
+- 推荐命令（任选其一；未全局安装时与 **README** 一致：`PYTHONPATH=src python3 -m jdtls_lsp`；`python3 -m jdtls_lsp.cli` 等价）：
 
 ```bash
 jdtls-lsp --help
 jdtls-lsp callchain-up --help
+jdtls-lsp callchain-down --help
 # 或
-PYTHONPATH=src python3 -m jdtls_lsp.cli --help
-PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up --help
+PYTHONPATH=src python3 -m jdtls_lsp --help
+PYTHONPATH=src python3 -m jdtls_lsp callchain-up --help
 ```
 
 ## 何时使用
@@ -46,18 +47,18 @@ PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up --help
 
 ```bash
 cd /path/to/jdtls-lsp-py
-PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up "$PROJECT" \
+PYTHONPATH=src python3 -m jdtls_lsp callchain-up "$PROJECT" \
   --query saveMonitorData --format markdown --max-depth 100
 ```
 
 4. **解读输出**：
    - **`chains[].chain`**：自下而上，起点 → 直接调用方 → …
-   - **`stopReason`**：`rest_endpoint`（追到 REST）、`no_incoming`、`cycle`、`max_depth`、`abstract_class`、`jdtls_error` 等。
+   - **`stopReason`**：`rest_endpoint`（追到 REST）、`message_listener`（Kafka/Rabbit 等消费者）、`scheduled_task`（`@Scheduled` / Quartz / XXL-JOB 等）、`async_method`（Spring **`@Async`**）、`no_incoming`、`cycle`、`max_depth`、`abstract_class`、`jdtls_error` 等。
    - **`topEntry`**：链顶 Spring 映射时含 `httpMethod`、`restPath`（如 `POST /api/...`）。
 5. **多 grep 起点去重**（同一方法命中 Controller / `*Impl` / 接口等多条链时）：加过滤只保留实现类一条，例如：
 
 ```bash
-PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up "$PROJECT" \
+PYTHONPATH=src python3 -m jdtls_lsp callchain-up "$PROJECT" \
   --query saveMonitorData \
   --grep-skip-interface --grep-skip-rest-entry --grep-max-entry-points 1 \
   --format markdown
@@ -78,13 +79,15 @@ PYTHONPATH=src python3 -m jdtls_lsp.cli callchain-up "$PROJECT" \
 
 ## 作为库
 
+与 **README「作为库调用」** 一致：实现在 **`jdtls_lsp.callchain`**（`trace_call_chain_sync` / `trace_outgoing_subgraph_sync` 与 `callchain.format` 的 Markdown/摘要）。
+
 ```python
 from jdtls_lsp.callchain import trace_call_chain_sync
 
 text = trace_call_chain_sync(
     "/path/to/project",
     symbol_query="methodName",
-    output_format="json",
+    output_format="json",  # 或 "markdown"；bundle step4/5 默认 markdown
     grep_skip_interface=True,
     grep_skip_rest=True,
     grep_max_entry_points=1,

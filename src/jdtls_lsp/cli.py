@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from jdtls_lsp.analyze import OPERATIONS, analyze_sync
 from jdtls_lsp.callchain import trace_call_chain_sync, trace_outgoing_subgraph_sync
-from jdtls_lsp.java_entrypoints import scan_java_entrypoints
+from jdtls_lsp.entry_scan import scan_java_entrypoints, scan_rest_map
+from jdtls_lsp.reverse_design.bundle import run_design_bundle
+from jdtls_lsp.reverse_design.batch_symbols_by_package import batch_symbols_by_package
+from jdtls_lsp.reverse_design.scan_modules import scan_modules
+from jdtls_lsp.reverse_design.table_manifest import build_table_manifest
 from jdtls_lsp.java_grep import java_grep_report
-from jdtls_lsp.logutil import setup_logging
+from jdtls_lsp.logutil import get_logger, setup_logging
+
+_cli_log = get_logger("cli")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ep = sub.add_parser(
         "entrypoints",
-        help="静态扫描 Java/Spring 常见入口（main、@SpringBootApplication 等，无需 JDTLS）",
+        help="静态入口扫描：main/Spring/Servlet/消息/定时/@Async 等（HTTP 映射见 reverse-design rest-map）",
     )
     ep.add_argument("project", help="项目根目录")
     ep.add_argument("--max-files", type=int, default=30_000, help="最多扫描 .java 文件数，默认 30000")
@@ -221,6 +228,165 @@ def main(argv: list[str] | None = None) -> int:
         help="json（默认）或 text（每行 path:line:行内容）",
     )
 
+    reverse_design_p = sub.add_parser(
+        "reverse-design",
+        help="逆向设计八步（需求.md）：step1→step8；step2 rest-map 为静态入口扫描（与 entrypoints 并列，均无 JDTLS）",
+    )
+    rdg = reverse_design_p.add_subparsers(dest="reverse_design_cmd", required=True)
+
+    d_scan = rdg.add_parser(
+        "scan",
+        help="[step1] A1：Maven/Gradle 模块与构建线索扫描（无 JDTLS）",
+    )
+    d_scan.add_argument("project", help="项目根目录")
+
+    d_rest = rdg.add_parser(
+        "rest-map",
+        help="[step2·静态入口] Spring REST 映射启发式扫描（与 entrypoints 同属无 JDTLS 入口发现）",
+    )
+    d_rest.add_argument("project", help="项目根目录")
+    d_rest.add_argument("--max-files", type=int, default=8_000, help="最多扫描 .java 文件数")
+
+    d_tbl = rdg.add_parser(
+        "db-tables",
+        help="[step3] A2.5：用户表清单 + 代码轻量抽取 → tables-manifest（无 JDTLS）",
+    )
+    d_tbl.add_argument("project", help="项目根目录")
+    d_tbl.add_argument(
+        "--tables-file",
+        type=Path,
+        default=None,
+        help="每行一表，# 为注释；与 --tables 合并，清单内表名为规范名",
+    )
+    d_tbl.add_argument("--tables", default="", help="逗号分隔表名，与 --tables-file 合并")
+    d_tbl.add_argument(
+        "--strict-tables-only",
+        action="store_true",
+        help="不在 JSON 中列出 extractedOnly（仍可做抽取与 anchors）",
+    )
+    d_tbl.add_argument("--max-java-files", type=int, default=8_000, help="最多扫描 .java 文件数")
+    d_tbl.add_argument("--max-xml-files", type=int, default=2_000, help="最多扫描 .xml 文件数（MyBatis 等）")
+
+    d_sym = rdg.add_parser(
+        "symbols",
+        help="[step1 补充] A3：轻量扫描顶层类型按包聚合（无 JDTLS）",
+    )
+    d_sym.add_argument("project", help="项目根目录")
+    d_sym.add_argument(
+        "--glob",
+        default="**/src/main/java/**/*.java",
+        help="相对项目根的 glob，默认 **/src/main/java/**/*.java",
+    )
+    d_sym.add_argument("--max-files", type=int, default=200, help="最多扫描的 .java 文件数")
+    d_sym.add_argument("--jdtls", type=Path, default=None, help="JDTLS 目录")
+
+    d_bun = rdg.add_parser(
+        "bundle",
+        help="[step8 编排] A4：写 design/；默认 step1–3，可选 step4–6（--rest-callchains-down / --table-callchains-up / --queries / --business-summary）",
+    )
+    d_bun.add_argument("project", help="项目根目录")
+    d_bun.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("design"),
+        help="输出目录（step8 根目录），默认 ./design",
+    )
+    d_bun.add_argument(
+        "--queries",
+        default="",
+        help="[step5′ 关键字向上] 逗号分隔关键字，各跑一次 callchain-up → data/callchain-up-*.md（Markdown，文末 JSON）；空则跳过",
+    )
+    d_bun.add_argument(
+        "--skip-symbols",
+        action="store_true",
+        help="不跑 [step1 补充] A3（symbols-by-package.json）",
+    )
+    d_bun.add_argument(
+        "--skip-callchain",
+        action="store_true",
+        help="跳过 step4/step5/step5′：不跑需 JDTLS 的 callchain-up（--queries / --table-callchains-up）与 callchain-down（--rest-callchains-down）",
+    )
+    d_bun.add_argument(
+        "--table-callchains-up",
+        action="store_true",
+        dest="table_callchains_up",
+        help="[step5] 按表向上：对 tables-manifest 蛇形表名推断 *ServiceImpl 锚点并各 callchain-up → data/callchain-up-table-*.md",
+    )
+    d_bun.add_argument(
+        "--max-table-callchain-scan",
+        type=int,
+        default=12_000,
+        metavar="N",
+        help="按表锚点扫描时最多检查的 *ServiceImpl.java 路径数，默认 12000",
+    )
+    d_bun.add_argument(
+        "--rest-callchains-down",
+        action="store_true",
+        help="[step4] 按 REST 端点向下：各端点 callchain-down → data/callchain-down-rest-*.md",
+    )
+    d_bun.add_argument(
+        "--max-rest-down-endpoints",
+        type=int,
+        default=0,
+        metavar="N",
+        help="REST 向下链最多处理端点数（按 rest-map 顺序），0 表示不限制",
+    )
+    d_bun.add_argument(
+        "--rest-down-depth",
+        type=int,
+        default=16,
+        help="callchain-down BFS 最大深度，默认 16（与单独深挖时建议一致）",
+    )
+    d_bun.add_argument(
+        "--rest-down-max-nodes",
+        type=int,
+        default=500,
+        help="向下子图最多节点数，默认 500",
+    )
+    d_bun.add_argument(
+        "--rest-down-max-branches",
+        type=int,
+        default=48,
+        help="每层 outgoing 分支上限，默认 48",
+    )
+    d_bun.add_argument(
+        "--business-summary",
+        action="store_true",
+        help="[step6] 合并 data/callchain-down-rest-*.md（或 .json）的 keyMethods → business.md（可复用已有报告；step7 须另用 analyze）",
+    )
+    d_bun.add_argument("--skip-rest-map", action="store_true", help="跳过 [step2]：不生成 rest-map")
+    d_bun.add_argument(
+        "--skip-table-manifest",
+        action="store_true",
+        help="跳过 [step3]：不生成 tables-manifest.json（A2.5）",
+    )
+    d_bun.add_argument("--skip-scan", action="store_true", help="跳过 [step1] modules：不生成 modules.json")
+    d_bun.add_argument(
+        "--tables-file",
+        type=Path,
+        default=None,
+        help="用户表清单（每行一表）；与 --tables 合并，作为规范名与 unresolved 基准",
+    )
+    d_bun.add_argument("--tables", default="", help="逗号分隔表名，与 --tables-file 合并")
+    d_bun.add_argument(
+        "--strict-tables-only",
+        action="store_true",
+        help="tables-manifest 中不输出 extractedOnly 列表",
+    )
+    d_bun.add_argument("--max-table-java-files", type=int, default=8_000)
+    d_bun.add_argument("--max-table-xml-files", type=int, default=2_000)
+    d_bun.add_argument("--glob", default="**/src/main/java/**/*.java", help="[step1 补充] A3 轻量扫描 glob")
+    d_bun.add_argument("--max-symbol-files", type=int, default=200)
+    d_bun.add_argument("--max-rest-files", type=int, default=8_000)
+    d_bun.add_argument("--callchain-depth", type=int, default=20)
+    d_bun.add_argument("--jdtls", type=Path, default=None)
+    d_bun.add_argument(
+        "--quiet",
+        action="store_true",
+        help="TTY 下也不自动打开 INFO 日志；stdout 仅在结束时输出 JSON（适合脚本重定向）",
+    )
+
     args = p.parse_args(argv)
     if args.log_level:
         setup_logging(args.log_level)
@@ -230,6 +396,19 @@ def main(argv: list[str] | None = None) -> int:
         setup_logging("INFO")
     else:
         setup_logging()
+
+    # reverse-design bundle（step4/step5 等）会冷启动 JDTLS、可能大量 callchain 请求，耗时常达数分钟；
+    # 默认 WARNING 时 stderr 无输出、stdout 仅结束时打印 JSON，易被误认为「卡住」。
+    if (
+        getattr(args, "cmd", None) == "reverse-design"
+        and getattr(args, "reverse_design_cmd", None) == "bundle"
+        and not args.log_level
+        and args.verbose == 0
+        and not (os.environ.get("JDTLS_LSP_LOG") or "").strip()
+        and not getattr(args, "quiet", False)
+        and sys.stderr.isatty()
+    ):
+        setup_logging("INFO")
 
     if args.cmd == "analyze":
         out = analyze_sync(
@@ -315,6 +494,81 @@ def main(argv: list[str] | None = None) -> int:
             out = "\n".join(lines)
             if lines:
                 out += "\n"
+    elif args.cmd == "reverse-design":
+        root = Path(args.project).resolve()
+        if not root.exists():
+            sys.stdout.write(f"错误: 项目路径不存在 {args.project}\n")
+            return 2
+        dc = args.reverse_design_cmd
+        _cli_log.info("cli reverse-design subcommand=%s project=%s", dc, root)
+        if dc == "scan":
+            out = json.dumps(scan_modules(root), ensure_ascii=False, indent=2)
+        elif dc == "rest-map":
+            mf = getattr(args, "max_files", 8_000)
+            out = json.dumps(scan_rest_map(root, max_files=mf), ensure_ascii=False, indent=2)
+        elif dc == "db-tables":
+            tf = getattr(args, "tables_file", None)
+            tf_res = tf.expanduser().resolve() if tf else None
+            res = build_table_manifest(
+                root,
+                tables_file=tf_res,
+                tables_inline=str(getattr(args, "tables", "") or ""),
+                strict_tables_only=bool(getattr(args, "strict_tables_only", False)),
+                max_java_files=int(getattr(args, "max_java_files", 8_000)),
+                max_xml_files=int(getattr(args, "max_xml_files", 2_000)),
+            )
+            out = res["error"] if res.get("error") else json.dumps(res, ensure_ascii=False, indent=2)
+        elif dc == "symbols":
+            res = batch_symbols_by_package(
+                str(root),
+                jdtls_path=getattr(args, "jdtls", None),
+                glob_pattern=getattr(args, "glob", "**/src/main/java/**/*.java"),
+                max_files=getattr(args, "max_files", 200),
+            )
+            out = res["error"] if res.get("error") else json.dumps(res, ensure_ascii=False, indent=2)
+        elif dc == "bundle":
+            qs = [x.strip() for x in str(args.queries).split(",") if x.strip()]
+            if sys.stderr.isatty() and not args.quiet:
+                sys.stderr.write(
+                    "jdtls-lsp reverse-design bundle: 运行中（step1–3 多为本地扫描；"
+                    "step4/step5/step5′ 需 JDTLS，可能较慢；step6 --business-summary 通常很快）；"
+                    "step7 须另用 analyze/callchain；step8 结束写 index.md 并打印 stdout JSON。"
+                    "完成前 stdout 无最终 JSON，进度见下方日志。\n"
+                )
+                sys.stderr.flush()
+            tf_b = getattr(args, "tables_file", None)
+            tf_b_res = tf_b.expanduser().resolve() if tf_b else None
+            summ = run_design_bundle(
+                str(root),
+                args.output.resolve(),
+                queries=qs,
+                skip_symbols=args.skip_symbols,
+                skip_callchain=args.skip_callchain,
+                skip_rest_map=args.skip_rest_map,
+                skip_scan=args.skip_scan,
+                skip_table_manifest=getattr(args, "skip_table_manifest", False),
+                jdtls_path=args.jdtls,
+                glob_pattern=args.glob,
+                max_symbol_files=args.max_symbol_files,
+                max_rest_map_files=args.max_rest_files,
+                callchain_max_depth=args.callchain_depth,
+                tables_file=tf_b_res,
+                tables_inline=str(getattr(args, "tables", "") or ""),
+                strict_tables_only=bool(getattr(args, "strict_tables_only", False)),
+                max_table_java_files=int(getattr(args, "max_table_java_files", 8_000)),
+                max_table_xml_files=int(getattr(args, "max_table_xml_files", 2_000)),
+                table_callchains_up=bool(getattr(args, "table_callchains_up", False)),
+                max_table_callchain_java_scan=int(getattr(args, "max_table_callchain_scan", 12_000)),
+                rest_callchains_down=bool(getattr(args, "rest_callchains_down", False)),
+                max_rest_down_endpoints=int(getattr(args, "max_rest_down_endpoints", 0)),
+                rest_down_max_depth=int(getattr(args, "rest_down_depth", 8)),
+                rest_down_max_nodes=int(getattr(args, "rest_down_max_nodes", 500)),
+                rest_down_max_branches=int(getattr(args, "rest_down_max_branches", 32)),
+                business_summary=bool(getattr(args, "business_summary", False)),
+            )
+            out = summ["error"] if summ.get("error") else json.dumps(summ, ensure_ascii=False, indent=2)
+        else:
+            return 1
     else:
         return 1
 

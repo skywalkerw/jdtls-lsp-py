@@ -1,4 +1,7 @@
-"""Trace incoming Java call chains by class + method until REST endpoint or abstract class."""
+"""在 LSP / grep 之上包装 **向上**（incoming）与 **向下**（outgoing BFS）调用链追踪。
+
+属 ``jdtls_lsp.callchain`` 包；报告格式化见同包 ``format`` 模块。
+"""
 
 from __future__ import annotations
 
@@ -19,7 +22,15 @@ from jdtls_lsp.java_grep import (
     scan_method_line_candidates,
     sort_grep_hits_by_score,
 )
-from jdtls_lsp.callchain_format import format_callchain_markdown, format_downchain_markdown
+from .format import format_callchain_markdown, format_downchain_markdown
+from jdtls_lsp.entry_scan.java_entry_patterns import (
+    ASYNC_METHOD_MATCHERS,
+    MESSAGE_LISTENER_MATCHERS,
+    SCHEDULED_TASK_MATCHERS,
+    collect_async_markers,
+    collect_message_listener_markers,
+    collect_scheduled_markers,
+)
 from jdtls_lsp.logutil import format_payload
 
 _log = logging.getLogger("jdtls_lsp.callchain")
@@ -99,6 +110,72 @@ def _extract_java_class_name(raw: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _extract_java_package(raw: str) -> str | None:
+    m = re.search(r"^\s*package\s+([\w.]+)\s*;", raw, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def _expected_java_package_for_fqcn(fqcn: str) -> str:
+    parts = fqcn.strip().split(".")
+    if len(parts) < 2:
+        return ""
+    return ".".join(parts[:-1])
+
+
+def _resolve_class_symbol_via_source_file(root: Path, fqcn: str) -> dict[str, Any] | None:
+    """
+    JDTLS ``workspace/symbol`` 对长 FQCN 可能无结果；按 Maven 惯例 ``src/main/java`` + 路径推断打开类文件。
+    """
+    fq = fqcn.strip()
+    if "." not in fq:
+        return None
+    rel = Path("src/main/java") / (fq.replace(".", "/") + ".java")
+    p = (root / rel).resolve()
+    if not p.is_file():
+        return None
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    simple = fq.split(".")[-1]
+    parsed = _extract_java_class_name(text)
+    if parsed != simple:
+        return None
+    exp_pkg = _expected_java_package_for_fqcn(fq)
+    pkg = _extract_java_package(text) or ""
+    if exp_pkg and pkg != exp_pkg:
+        return None
+    uri = p.as_uri()
+    z = {"line": 0, "character": 0}
+    return {
+        "name": simple,
+        "kind": 5,
+        "location": {"uri": uri, "range": {"start": z, "end": z}},
+    }
+
+
+def _find_class_symbol_simple_name_path_match(
+    client: LSPClient,
+    fqcn: str,
+    exact_name: str,
+) -> dict[str, Any] | None:
+    """用简单类名再搜 ``workspace/symbol``，按源码路径后缀匹配唯一 FQCN。"""
+    needle = "/" + fqcn.replace(".", "/") + ".java"
+    needle = needle.replace("\\", "/")
+    syms = _workspace_symbol_with_retry(client, exact_name, limit=200)
+    for sym in syms:
+        if int(sym.get("kind", 0)) not in (5, 11):
+            continue
+        uri = _symbol_uri(sym)
+        path = _uri_to_path(uri or "")
+        if path is None:
+            continue
+        norm = str(path).replace("\\", "/")
+        if norm.endswith(needle):
+            return sym
+    return None
+
+
 def _find_target_class_symbol(
     client: LSPClient,
     root: Path,
@@ -107,8 +184,8 @@ def _find_target_class_symbol(
     q = class_name.strip()
     if not q:
         return None
-    syms = _workspace_symbol_with_retry(client, q, limit=80)
     exact_name = q.split(".")[-1]
+    syms = _workspace_symbol_with_retry(client, q, limit=80)
     preferred: list[dict[str, Any]] = []
     fallback: list[dict[str, Any]] = []
     for sym in syms:
@@ -128,21 +205,26 @@ def _find_target_class_symbol(
         else:
             fallback.append(sym)
 
-    cand = preferred[0] if preferred else (fallback[0] if fallback else None)
-    if cand is None:
-        return None
+    cand: dict[str, Any] | None = preferred[0] if preferred else (fallback[0] if fallback else None)
+    if cand is not None:
+        uri = _symbol_uri(cand)
+        if uri:
+            p = _uri_to_path(uri)
+            if p and p.exists():
+                try:
+                    text = p.read_text(encoding="utf-8")
+                    parsed_name = _extract_java_class_name(text)
+                    if parsed_name and parsed_name != exact_name and "." not in class_name:
+                        cand = None
+                except Exception:
+                    pass
 
-    uri = _symbol_uri(cand)
-    if uri:
-        p = _uri_to_path(uri)
-        if p and p.exists():
-            try:
-                text = p.read_text(encoding="utf-8")
-                parsed_name = _extract_java_class_name(text)
-                if parsed_name and parsed_name != exact_name and "." not in class_name:
-                    return None
-            except Exception:
-                pass
+    if cand is None:
+        via = _resolve_class_symbol_via_source_file(root, q)
+        if via is not None:
+            cand = via
+    if cand is None and "." in q:
+        cand = _find_class_symbol_simple_name_path_match(client, q, exact_name)
     return cand
 
 
@@ -699,11 +781,7 @@ def _resolve_item_from_keyword(
     return None, {**grep_common, "javaGrepMultiFile": True, "javaGrepEntries": entries_meta}
 
 
-def _is_rest_endpoint(file_path: Path, line0: int) -> bool:
-    try:
-        lines = file_path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return False
+def _is_rest_endpoint_lines(lines: list[str], line0: int) -> bool:
     start = max(0, line0 - 8)
     end = min(len(lines), line0 + 3)
     near = "\n".join(lines[start:end])
@@ -712,11 +790,15 @@ def _is_rest_endpoint(file_path: Path, line0: int) -> bool:
     return has_mapping or (file_has_controller and has_mapping)
 
 
-def _is_abstract_class(file_path: Path, line0: int) -> bool:
+def _is_rest_endpoint(file_path: Path, line0: int) -> bool:
     try:
         lines = file_path.read_text(encoding="utf-8").splitlines()
-    except Exception:
+    except OSError:
         return False
+    return _is_rest_endpoint_lines(lines, line0)
+
+
+def _is_abstract_class_lines(lines: list[str], line0: int) -> bool:
     start = max(0, line0 - 120)
     up = lines[start : line0 + 1]
     for i in range(len(up) - 1, -1, -1):
@@ -724,6 +806,14 @@ def _is_abstract_class(file_path: Path, line0: int) -> bool:
         if " class " in f" {s} " and "abstract class" in s:
             return True
     return False
+
+
+def _is_abstract_class(file_path: Path, line0: int) -> bool:
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    return _is_abstract_class_lines(lines, line0)
 
 
 def _node_key(node: dict[str, Any]) -> str:
@@ -850,11 +940,35 @@ def _node_from_item(item: dict[str, Any], root: Path, default_class: str | None 
         "uri": uri,
     }
     if path and path.exists():
-        node["isRest"] = _is_rest_endpoint(path, line0)
-        node["isAbstractClass"] = _is_abstract_class(path, line0)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        if lines:
+            node["isRest"] = _is_rest_endpoint_lines(lines, line0)
+            node["isAbstractClass"] = _is_abstract_class_lines(lines, line0)
+            win = "\n".join(lines[max(0, line0 - 35) : min(len(lines), line0 + 3)])
+            node["isMessageListener"] = any(rx.search(win) for rx in MESSAGE_LISTENER_MATCHERS)
+            node["isScheduledTask"] = any(rx.search(win) for rx in SCHEDULED_TASK_MATCHERS)
+            node["isAsyncMethod"] = any(rx.search(win) for rx in ASYNC_METHOD_MATCHERS)
+            if node["isMessageListener"]:
+                node["listenerMarkers"] = collect_message_listener_markers(win)
+            if node["isScheduledTask"]:
+                node["scheduledMarkers"] = collect_scheduled_markers(win)
+            if node["isAsyncMethod"]:
+                node["asyncMarkers"] = collect_async_markers(win)
+        else:
+            node["isRest"] = False
+            node["isAbstractClass"] = False
+            node["isMessageListener"] = False
+            node["isScheduledTask"] = False
+            node["isAsyncMethod"] = False
     else:
         node["isRest"] = False
         node["isAbstractClass"] = False
+        node["isMessageListener"] = False
+        node["isScheduledTask"] = False
+        node["isAsyncMethod"] = False
     return node
 
 
@@ -876,6 +990,15 @@ def _trace_up_all(
     chain = current_chain + [cur_node]
     if cur_node.get("isRest"):
         out_chains.append({"chain": chain, "stopReason": "rest_endpoint"})
+        return
+    if cur_node.get("isMessageListener"):
+        out_chains.append({"chain": chain, "stopReason": "message_listener"})
+        return
+    if cur_node.get("isScheduledTask"):
+        out_chains.append({"chain": chain, "stopReason": "scheduled_task"})
+        return
+    if cur_node.get("isAsyncMethod"):
+        out_chains.append({"chain": chain, "stopReason": "async_method"})
         return
     if cur_node.get("isAbstractClass"):
         out_chains.append({"chain": chain, "stopReason": "abstract_class"})
@@ -1172,7 +1295,8 @@ def _extract_javadoc_before_signature(lines: list[str], sig_line: int) -> str:
 def extract_top_entry_info(root: Path, node: dict[str, Any]) -> dict[str, Any]:
     """
     解析链最上层节点对应源码：类级 @RequestMapping + 方法级映射、JavaDoc。
-    用于 stopReason 为 no_incoming / rest_endpoint 时的入口说明。
+    用于 stopReason 为 no_incoming / rest_endpoint 时的入口说明（HTTP 映射与 JavaDoc）。
+    消息监听 / 定时任务见节点上的 listenerMarkers / scheduledMarkers 与 ``_enrich_chains_with_top_entry``。
     """
     rel = node.get("file")
     if not isinstance(rel, str) or not rel.strip():
@@ -1211,12 +1335,12 @@ def extract_top_entry_info(root: Path, node: dict[str, Any]) -> dict[str, Any]:
 
 
 def _enrich_chains_with_top_entry(root: Path, chains: list[dict[str, Any]]) -> None:
-    """在已达最上层（无上游或 REST 终止）时，为最上层节点补充 REST 路径与 JavaDoc。"""
+    """在链顶终止时补充 REST / JavaDoc，或消息监听、定时任务、`@Async` 等结构化摘要。"""
     for ch in chains:
         if not isinstance(ch, dict):
             continue
         sr = ch.get("stopReason")
-        if sr not in ("no_incoming", "rest_endpoint"):
+        if sr not in ("no_incoming", "rest_endpoint", "message_listener", "scheduled_task", "async_method"):
             continue
         nodes = ch.get("chain")
         if not isinstance(nodes, list) or not nodes:
@@ -1224,9 +1348,22 @@ def _enrich_chains_with_top_entry(root: Path, chains: list[dict[str, Any]]) -> N
         top = nodes[-1]
         if not isinstance(top, dict):
             continue
-        info = extract_top_entry_info(root, top)
-        if info:
-            ch["topEntry"] = info
+        if sr in ("no_incoming", "rest_endpoint"):
+            info = extract_top_entry_info(root, top)
+            if info:
+                ch["topEntry"] = info
+        elif sr == "message_listener":
+            lm = top.get("listenerMarkers")
+            if isinstance(lm, list) and lm:
+                ch["topEntry"] = {"listenerMarkers": lm}
+        elif sr == "scheduled_task":
+            sm = top.get("scheduledMarkers")
+            if isinstance(sm, list) and sm:
+                ch["topEntry"] = {"scheduledMarkers": sm}
+        elif sr == "async_method":
+            am = top.get("asyncMarkers")
+            if isinstance(am, list) and am:
+                ch["topEntry"] = {"asyncMarkers": am}
 
 
 
@@ -1268,6 +1405,9 @@ def _finalize_downchain(
         "stopReason": subgraph.get("stopReason", ""),
         "jdtlsErrors": subgraph.get("jdtlsErrors", []),
     }
+    from jdtls_lsp.business_summary import annotate_downchain_business
+
+    annotate_downchain_business(payload, root)
     if output_format == "markdown":
         return format_downchain_markdown(payload)
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1283,6 +1423,7 @@ def trace_outgoing_subgraph_sync(
     character: int | None = None,
     symbol_query: str | None = None,
     jdtls_path: Path | None = None,
+    lsp_client: LSPClient | None = None,
     max_depth: int = 8,
     max_nodes: int = 500,
     max_branches: int = 32,
@@ -1294,6 +1435,9 @@ def trace_outgoing_subgraph_sync(
     """
     自起点 **向下** BFS 展开 ``callHierarchy/outgoingCalls``，产出有向子图（节点 + 边表）。
     入口与 ``trace_call_chain_sync`` 相同，但 **不支持** 关键字 grep 产生的多文件多起点（需单起点）。
+
+    若传入 ``lsp_client``（已由 ``create_client`` 初始化且 **未** shutdown），则复用该连接且 **不会** 在本函数内
+    ``shutdown``（便于 ``reverse-design bundle`` 等对同一工程批量追踪只启一次 JDTLS）。
     """
     root_path = Path(project_path).resolve()
     if not root_path.exists():
@@ -1328,7 +1472,8 @@ def trace_outgoing_subgraph_sync(
         _log.warning("%s", msg)
         return msg
 
-    client: LSPClient | None = create_client(project_path, jdtls_path=jdtls_path)
+    own_client = lsp_client is None
+    client: LSPClient | None = lsp_client or create_client(project_path, jdtls_path=jdtls_path)
     root = Path(client.root).resolve()
     try:
         item: dict[str, Any] | None = None
@@ -1471,7 +1616,7 @@ def trace_outgoing_subgraph_sync(
         )
         return out
     finally:
-        if client is not None:
+        if own_client and client is not None:
             client.shutdown()
 
 
@@ -1485,6 +1630,7 @@ def trace_call_chain_sync(
     character: int | None = None,
     symbol_query: str | None = None,
     jdtls_path: Path | None = None,
+    lsp_client: LSPClient | None = None,
     max_depth: int = MAX_DEPTH_DEFAULT,
     output_format: Literal["json", "markdown"] = "json",
     grep_parallel_workers: int | None = None,
@@ -1500,6 +1646,8 @@ def trace_call_chain_sync(
 
     ``grep_skip_interface`` / ``grep_skip_rest`` / ``grep_max_entry_points``：仅作用于关键字回退到
     ``java_text_grep`` 时的起点列表（见 README）。
+
+    若传入 ``lsp_client``，则复用连接且 **不会** 在本函数内 ``shutdown``（同 ``trace_outgoing_subgraph_sync``）。
     """
     root_path = Path(project_path).resolve()
     if not root_path.exists():
@@ -1538,16 +1686,23 @@ def trace_call_chain_sync(
         _log.warning("%s", msg)
         return msg
 
+    entry_detail = ""
+    if has_cm:
+        entry_detail = f"class={class_name!r} method={method_name!r}"
+    elif has_fl:
+        entry_detail = f"file={file_path!r} line={line} char={character}"
+    elif has_q:
+        entry_detail = f"query={str(symbol_query).strip()!r}"
     _log.info(
-        "trace_call_chain_sync project=%s mode=cm:%s fl:%s q:%s max_depth=%s",
+        "trace_call_chain_sync start project=%s max_depth=%s output_format=%s %s",
         project_path,
-        has_cm,
-        has_fl,
-        has_q,
         max_depth,
+        output_format,
+        entry_detail,
     )
 
-    client: LSPClient | None = create_client(project_path, jdtls_path=jdtls_path)
+    own_client = lsp_client is None
+    client: LSPClient | None = lsp_client or create_client(project_path, jdtls_path=jdtls_path)
     root = Path(client.root).resolve()
     try:
         item: dict[str, Any] | None = None
@@ -1727,14 +1882,12 @@ def trace_call_chain_sync(
         _log.debug("trace_call_chain_sync result=%s", format_payload(out))
         return out
     finally:
-        if client is not None:
+        if own_client and client is not None:
             client.shutdown()
 
 
 __all__ = [
     "trace_call_chain_sync",
     "trace_outgoing_subgraph_sync",
-    "format_callchain_markdown",
-    "format_downchain_markdown",
     "extract_top_entry_info",
 ]
