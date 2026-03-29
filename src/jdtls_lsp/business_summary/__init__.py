@@ -60,7 +60,13 @@ def _is_controller_layer(node: dict[str, Any]) -> bool:
     if "/controller/" in fp or fp.endswith("controller.java"):
         return True
     cls = str(node.get("class", ""))
-    return cls.endswith("Controller") or ".controller." in cls.lower()
+    simple = cls.rsplit(".", 1)[-1] if cls else ""
+    if cls.endswith("Controller") or ".controller." in cls.lower():
+        return True
+    if any(seg in fp for seg in ("/web/", "/api/", "/rest/", "/resource/")):
+        if simple.endswith(("Resource", "Rest", "Api", "Endpoint", "Handler")):
+            return True
+    return False
 
 
 def _is_persistence_sink(node: dict[str, Any]) -> bool:

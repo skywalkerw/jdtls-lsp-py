@@ -18,29 +18,82 @@ if TYPE_CHECKING:
 _log = get_logger("reverse_design.rest_callchains_down")
 
 
+def _candidate_impl_simple_names(handler_simple: str) -> list[str]:
+    """由处理器简单类名推导可能的 ``*ServiceImpl`` 简单名（去重保序）。"""
+    s = handler_simple
+    out: list[str] = []
+    if s.endswith("Controller") and len(s) > len("Controller") and s != "Controller":
+        out.append(s[: -len("Controller")] + "ServiceImpl")
+    for suf in ("Api", "Resource", "Endpoint", "Handler", "Rest"):
+        if s.endswith(suf) and len(s) > len(suf):
+            out.append(s[: -len(suf)] + "ServiceImpl")
+    out.append(s + "ServiceImpl")
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    return deduped
+
+
+def _candidate_service_impl_packages(pkg: str) -> list[str]:
+    """由处理器所在包推导若干 ``….service.impl`` 候选包。"""
+    parts = pkg.split(".")
+    out: list[str] = []
+    if len(parts) >= 2:
+        out.append(".".join(parts[:-1] + ["service", "impl"]))
+    for i in range(len(parts) - 1, 0, -1):
+        out.append(".".join(parts[:i] + ["service", "impl"]))
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    return deduped
+
+
 def infer_service_impl_fqcn(project_root: Path, controller_fqcn: str) -> str | None:
     """
     Spring 常见约定：``com.foo.controller.XxxController`` → ``com.foo.service.impl.XxxServiceImpl``。
 
+    兼容 **非** ``*Controller`` 类名或 **非** ``…controller…`` 包：在同模块 ``service.impl`` 下按
+    ``XxxApi`` / ``XxxResource`` 等后缀推导 ``XxxServiceImpl``，若对应 ``*.java`` 存在则返回。
+
     若对应 ``src/main/java/.../XxxServiceImpl.java`` 存在则返回全限定名，否则 ``None``。
-    用于避免从 Controller 出发时 outgoing 落在 **Service 接口** 上导致 BFS 无法进入实现类与 Repository。
+    用于避免从 Web 入口出发时 outgoing 落在 **Service 接口** 上导致 BFS 无法进入实现类与 Repository。
     """
     fq = (controller_fqcn or "").strip()
     parts = fq.split(".")
-    if len(parts) < 4 or parts[-2] != "controller":
+    if len(parts) < 2:
         return None
     simple = parts[-1]
-    if not simple.endswith("Controller") or simple == "Controller":
-        return None
-    base = simple[: -len("Controller")]
-    if not base:
-        return None
-    impl_simple = f"{base}ServiceImpl"
-    pkg_parts = parts[:-2]
-    candidate = ".".join(pkg_parts) + ".service.impl." + impl_simple
-    rel = Path("src/main/java") / (candidate.replace(".", "/") + ".java")
-    p = project_root.resolve() / rel
-    return candidate if p.is_file() else None
+    pkg = ".".join(parts[:-1])
+    root = project_root.resolve()
+
+    def _exists(candidate: str) -> bool:
+        rel = Path("src/main/java") / (candidate.replace(".", "/") + ".java")
+        return (root / rel).is_file()
+
+    # A) 经典 …controller.XxxController → …service.impl.XxxServiceImpl
+    if len(parts) >= 4 and parts[-2] == "controller":
+        if simple.endswith("Controller") and simple != "Controller":
+            base = simple[: -len("Controller")]
+            if base:
+                impl_simple = f"{base}ServiceImpl"
+                candidate_pkg = ".".join(parts[:-2]) + ".service.impl"
+                candidate = f"{candidate_pkg}.{impl_simple}"
+                if _exists(candidate):
+                    return candidate
+
+    # B) 任意包/类名：在候选 ``service.impl`` 包下尝试若干 ``*ServiceImpl``
+    for impl_simple in _candidate_impl_simple_names(simple):
+        for cand_pkg in _candidate_service_impl_packages(pkg):
+            candidate = f"{cand_pkg}.{impl_simple}"
+            if _exists(candidate):
+                return candidate
+    return None
 
 
 def safe_controller_dirname(controller_fqcn: str) -> str:

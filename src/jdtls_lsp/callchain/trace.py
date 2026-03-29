@@ -385,9 +385,14 @@ def _java_file_declares_interface_matching_stem(path: Path) -> bool:
 def _grep_entry_tier(em: dict[str, Any]) -> int:
     """越小越优先：实现类 > Controller > 其它。"""
     f = str(em.get("file", ""))
-    if "ServiceImpl" in f or "Impl.java" in f or "/impl/" in f.replace("\\", "/").lower():
+    fn = f.replace("\\", "/").lower()
+    if "ServiceImpl" in f or "Impl.java" in f or "/impl/" in fn:
         return 0
     if "Controller" in f:
+        return 2
+    if any(seg in fn for seg in ("/web/", "/api/", "/rest/", "/resource/")) and not any(
+        seg in fn for seg in ("/client/", "/feign/")
+    ):
         return 2
     if "Repository" in f:
         return 3
@@ -786,8 +791,8 @@ def _is_rest_endpoint_lines(lines: list[str], line0: int) -> bool:
     end = min(len(lines), line0 + 3)
     near = "\n".join(lines[start:end])
     has_mapping = any(x in near for x in REST_ANNOTATIONS)
-    file_has_controller = "@RestController" in "\n".join(lines) or "@Controller" in "\n".join(lines)
-    return has_mapping or (file_has_controller and has_mapping)
+    # 与 rest-map 一致：有映射注解即视为 Web 端点，不要求类上必有 @Controller/@RestController
+    return has_mapping
 
 
 def _is_rest_endpoint(file_path: Path, line0: int) -> bool:

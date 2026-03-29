@@ -90,11 +90,37 @@ def _class_base_from_annots(lines: list[str]) -> str:
 
 
 def _is_controller_file(lines: list[str]) -> bool:
+    """
+    视作 Spring Web 映射源文件：``@RestController`` / ``@Controller`` + 映射注解，
+    或 **仅有** 类级/方法级 ``@RequestMapping``、``@GetMapping`` 等（兼容旧代码、非 ``*Controller`` 类名）。
+    """
     blob = "\n".join(lines[:500])
     if "@RestController" in blob:
         return True
-    if "@Controller" in blob and any(
-        x in blob for x in ("@GetMapping", "@PostMapping", "@RequestMapping", "@PutMapping", "@DeleteMapping", "@PatchMapping")
+    mapping_any = any(
+        x in blob
+        for x in (
+            "@GetMapping",
+            "@PostMapping",
+            "@PutMapping",
+            "@DeleteMapping",
+            "@PatchMapping",
+            "@RequestMapping",
+        )
+    )
+    if "@Controller" in blob and mapping_any:
+        return True
+    # 无 @Controller/@RestController，但存在 Spring MVC 映射注解（行首风格，减少误匹配注释内片段）
+    if any(
+        re.search(rf"^\s*{re.escape(m)}\b", blob, re.MULTILINE)
+        for m in (
+            "@RequestMapping",
+            "@GetMapping",
+            "@PostMapping",
+            "@PutMapping",
+            "@DeleteMapping",
+            "@PatchMapping",
+        )
     ):
         return True
     return False
