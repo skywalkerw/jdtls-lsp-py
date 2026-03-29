@@ -7,10 +7,10 @@ step8：bundle 写 ``index.md`` 与摘要。
 
 from jdtls_lsp.business_summary import (
     annotate_downchain_business,
-    extract_javadoc_above_method,
     format_business_md,
     merge_key_methods_from_downchain_files,
 )
+from jdtls_lsp.java_javadoc import extract_javadoc_above_method
 from jdtls_lsp.reverse_design.bundle import run_design_bundle
 from jdtls_lsp.reverse_design.rest_callchains_down import infer_service_impl_fqcn, run_rest_callchains_down
 from jdtls_lsp.entry_scan import scan_rest_map

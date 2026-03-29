@@ -614,7 +614,7 @@ design-out/
 
 - 依赖 **`data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`**（或遗留扁平 `.md`/`.json`）：通常与 **`--rest-callchains-down`** 同次或前次 bundle 产物配合使用。
 - **独立使用**：`--skip-callchain --business-summary` 仅根据输出目录里**已有**的向下链 JSON 生成/覆盖 `business.md`，适合 CI 分步或只刷新聚合视图。
-- 单条 `callchain-down` JSON 内已含节点级 **`businessScore` / `businessCandidate` / `businessSignals`** 与顶层 **`keyMethods`**（`annotate_downchain_business` 可写入 **`javadoc`** 供 JSON 阅读）；顶层 **`businessPhase`** 为 **`step6`**。生成 **`business.md`** 时 **始终按 `file`+`line` 从源码重新解析** Javadoc，不沿用链上 JSON 内缓存，以保证与当前提取规则一致。
+- 单条 `callchain-down` JSON 内已含节点级 **`businessScore` / `businessCandidate` / `businessSignals`** 与顶层 **`keyMethods`**（**不含** `javadoc` 字段；顶层 **`businessPhase`** 为 **`step6`**）。生成 **`business.md`** 时由 **`jdtls_lsp.java_javadoc.extract_javadoc_above_method`** 按 `file`+`line` 从源码解析 Javadoc。
 
 **stdout 摘要 JSON**（成功时）常见字段：
 
@@ -662,7 +662,7 @@ jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --quiet > bundl
 
 **排查「卡住」**：**step1 补充**（`symbols`）已为轻量扫描，一般很快。bundle 若慢，多在 **step4/step5/step5′**（多关键字、多表、多 REST 端点 → 大量 LSP 往返；**同次 bundle 内通常只启一次 JDTLS**）。**step7** 单独执行 **`callchain-up` / `callchain-down`** 仍为每次各启 JVM。单文件 **`analyze … documentSymbol`** 仍可能极慢，见 **`JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT`**。若 **LSP 管道僵死**（旧版 `jrpc` 写锁）：升级已修复版本。
 
-**库 API**：`jdtls_lsp.reverse_design.run_design_bundle`（**step8 编排**）、`scan_modules`（`reverse_design.scan_modules`，**step1**）、`jdtls_lsp.entry_scan.scan_rest_map`（**step2**，亦可从 `jdtls_lsp.reverse_design` 再导出）、`build_table_manifest`（**step3**）、`batch_symbols_by_package`（`reverse_design.batch_symbols_by_package`，**step1 补充**）、`run_table_callchains_up` / `resolve_service_anchor_for_table`（**step5**，对应 `--table-callchains-up`）、`run_rest_callchains_down`（**step4**，对应 `--rest-callchains-down`）；**step6** 亦可 `jdtls_lsp.business_summary`（与 `reverse_design` 平级，对应 `--business-summary`）内 `merge_key_methods_from_downchain_files`、`format_business_md`、`annotate_downchain_business`。静态入口另见 `jdtls_lsp.entry_scan.scan_java_entrypoints`（或子模块 `entry_scan.java_entrypoints`）。
+**库 API**：`jdtls_lsp.reverse_design.run_design_bundle`（**step8 编排**）、`scan_modules`（`reverse_design.scan_modules`，**step1**）、`jdtls_lsp.entry_scan.scan_rest_map`（**step2**，亦可从 `jdtls_lsp.reverse_design` 再导出）、`build_table_manifest`（**step3**）、`batch_symbols_by_package`（`reverse_design.batch_symbols_by_package`，**step1 补充**）、`run_table_callchains_up` / `resolve_service_anchor_for_table`（**step5**，对应 `--table-callchains-up`）、`run_rest_callchains_down`（**step4**，对应 `--rest-callchains-down`）；**step6** 亦可 `jdtls_lsp.business_summary`（与 `reverse_design` 平级，对应 `--business-summary`）内 `merge_key_methods_from_downchain_files`、`format_business_md`、`annotate_downchain_business`，以及 `jdtls_lsp.java_javadoc.extract_javadoc_above_method`（`business.md` 与链顶 REST 共用）。静态入口另见 `jdtls_lsp.entry_scan.scan_java_entrypoints`（或子模块 `entry_scan.java_entrypoints`）。
 
 ---
 

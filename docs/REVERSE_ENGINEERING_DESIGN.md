@@ -164,7 +164,8 @@
 | `reverse_design/scan_modules.py` | **scan_modules**：Maven/Gradle 模块概要（**step1**） |
 | `reverse_design/scan_java_top_level_types.py` | **scan_java_top_level_types**：单文件顶层类型轻量解析（**step1 补充** 子步骤） |
 | `reverse_design/batch_symbols_by_package.py` | **batch_symbols_by_package**：按包聚合轻量符号（**step1 补充**） |
-| `jdtls_lsp/business_summary/`（与 `reverse_design/` 平级） | **step6**、CLI `--business-summary`：`annotate_downchain_business`、`extract_javadoc_above_method`、`merge_key_methods_from_downchain_files`、`format_business_md`（`business.md` 附方法 Javadoc） |
+| `jdtls_lsp/java_javadoc.py` | `extract_javadoc_above_method`：从源码行解析方法紧上方 `/** … */`（`business.md`、链顶 REST `topEntry` 等共用） |
+| `jdtls_lsp/business_summary/`（与 `reverse_design/` 平级） | **step6**、CLI `--business-summary`：`annotate_downchain_business`、`merge_key_methods_from_downchain_files`、`format_business_md`（再导出 `extract_javadoc_above_method` 自 `java_javadoc`） |
 | `reverse_design/bundle.py` | 一键产出 `design/` + 可选 `callchain-up-*` / `callchain-up-table/<表>/…` / `callchain-down-rest/<Controller>/…` Markdown（文末 JSON） |
 | `reverse_design/rest_callchains_down.py` | 从 `rest-map` 批量 `callchain-down`（CLI `--rest-callchains-down`） |
 | `reverse_design/table_callchains_up.py` | 按表 `callchain-up`（CLI `--table-callchains-up`） |

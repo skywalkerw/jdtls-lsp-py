@@ -31,6 +31,7 @@ from jdtls_lsp.entry_scan.java_entry_patterns import (
     collect_message_listener_markers,
     collect_scheduled_markers,
 )
+from jdtls_lsp.java_javadoc import extract_javadoc_above_method
 from jdtls_lsp.logutil import format_payload
 
 _log = logging.getLogger("jdtls_lsp.callchain")
@@ -1266,37 +1267,6 @@ def _join_rest_paths(base: str, sub: str) -> str:
     return base + "/" + sub
 
 
-def _extract_javadoc_before_signature(lines: list[str], sig_line: int) -> str:
-    i = sig_line - 1
-    while i >= 0 and not lines[i].strip():
-        i -= 1
-    if i < 0:
-        return ""
-    while i >= 0 and lines[i].strip().startswith("@"):
-        i -= 1
-    while i >= 0 and not lines[i].strip():
-        i -= 1
-    if i < 0:
-        return ""
-    if "*/" not in lines[i]:
-        return ""
-    j = i
-    buf: list[str] = []
-    while j >= 0:
-        buf.insert(0, lines[j])
-        if "/**" in lines[j]:
-            break
-        j -= 1
-    raw = "\n".join(buf)
-    raw = re.sub(r"/\*\*", "", raw, count=1)
-    raw = re.sub(r"\*/\s*$", "", raw.strip())
-    body_lines: list[str] = []
-    for ln in raw.splitlines():
-        ln = re.sub(r"^\s*\*?\s?", "", ln)
-        body_lines.append(ln.strip())
-    return "\n".join(x for x in body_lines if x).strip()
-
-
 def extract_top_entry_info(root: Path, node: dict[str, Any]) -> dict[str, Any]:
     """
     解析链最上层节点对应源码：类级 @RequestMapping + 方法级映射、JavaDoc。
@@ -1322,7 +1292,8 @@ def extract_top_entry_info(root: Path, node: dict[str, Any]) -> dict[str, Any]:
     full_path = _join_rest_paths(class_base, sub_path or "")
     if full_path and not full_path.startswith("/"):
         full_path = "/" + full_path
-    javadoc = _extract_javadoc_before_signature(lines, sig)
+    # ``sig`` 为方法签名行 0-based 下标；``extract_javadoc_above_method`` 使用 1-based 行号
+    javadoc = extract_javadoc_above_method(lines, sig + 1)
     out: dict[str, Any] = {}
     if class_base:
         out["classBasePath"] = class_base if class_base.startswith("/") else "/" + class_base.lstrip("/")

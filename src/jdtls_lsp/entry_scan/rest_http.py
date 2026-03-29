@@ -83,7 +83,7 @@ def _class_base_from_annots(lines: list[str]) -> str:
         m = re.search(r"@RequestMapping\s*(\([^)]*\))?", ln)
         if not m:
             continue
-        http, path = _http_path_from_mapping("RequestMapping", m.group(1))
+        _http, path = _http_path_from_mapping("RequestMapping", m.group(1))
         if path is not None:
             return path
     return ""
