@@ -800,7 +800,7 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
     if isinstance(km, list) and km:
         lines.extend(
             [
-                "## 关键业务候选（阶段 D）",
+                "## 关键业务候选（step6）",
                 "",
                 "_启发式：Service 层、子图内可达持久化边界、`@Transactional`、多上游入度等；节点字段见 JSON ``businessScore`` / ``businessCandidate`` / ``businessSignals``。_",
                 "",

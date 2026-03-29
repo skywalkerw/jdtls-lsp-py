@@ -1,4 +1,4 @@
-"""**step6**：向下调用子图上的关键业务方法启发式标权（阶段 D / D1），产出 ``business.md`` 等 **业务摘要**。
+"""**step6**：向下调用子图上的关键业务方法启发式标权，产出 ``business.md`` 等 **业务摘要**。
 
 与 ``jdtls_lsp.reverse_design`` **平级**的包 ``jdtls_lsp.business_summary``，与 CLI ``--business-summary`` / ``run_design_bundle(..., business_summary=...)`` 命名一致。由 ``reverse_design.bundle`` 编排调用。便于后续拆分子模块或扩展输出。对外 API 见 ``__all__``。
 
@@ -41,6 +41,106 @@ class _SourceLineCache:
         except OSError:
             self._lines[key] = []
         return self._lines[key]
+
+
+_METHOD_LINE_HINT = re.compile(r"^\s*(?:public|protected|private)\b")
+
+
+def _looks_like_java_method_line(s: str) -> bool:
+    t = s.strip()
+    if not t or t.startswith("//") or t.startswith("/*"):
+        return False
+    if not _METHOD_LINE_HINT.match(t):
+        return False
+    if re.search(r"\b(?:class|interface|enum)\s+\w+", t):
+        return False
+    return "(" in t
+
+
+def _best_method_line_index(lines: list[str], line1: int) -> int:
+    """
+    将 ``line1``（1-based，来自 LSP/追踪）对齐到方法声明行：可能落在注解行或方法体上。
+    """
+    i0 = line1 - 1
+    if i0 < 0:
+        return 0
+    if i0 >= len(lines):
+        return max(0, len(lines) - 1)
+    for k in range(i0, min(i0 + 16, len(lines))):
+        if _looks_like_java_method_line(lines[k]):
+            return k
+    for k in range(i0, max(i0 - 48, -1), -1):
+        if _looks_like_java_method_line(lines[k]):
+            return k
+    return i0
+
+
+def _line_is_bare_close_brace(s: str) -> bool:
+    """上一方法或块的单独收尾 ``}`` / ``};``（与本方法之间无 Javadoc 时常见）。"""
+    t = s.strip()
+    if not t:
+        return False
+    return bool(re.match(r"^}\s*;?\s*$", t))
+
+
+def _collect_javadoc_block_from_opening(lines: list[str], k: int) -> list[str] | None:
+    """从含 ``/**`` 的第 ``k`` 行起向前收集到含 ``*/`` 的行为止（单行或多行 Javadoc）。"""
+    if k < 0 or k >= len(lines) or "/**" not in lines[k]:
+        return None
+    out: list[str] = []
+    for m in range(k, min(k + 200, len(lines))):
+        out.append(lines[m])
+        if "*/" in lines[m]:
+            return out
+    return None
+
+
+def _strip_javadoc_raw(block_lines: list[str]) -> str:
+    """将 ``/** ... */`` 行列表压成一段可读纯文本（保留换行）。"""
+    text = "\n".join(block_lines)
+    text = re.sub(r"^\s*/\*\*?\s*", "", text, count=1)
+    text = re.sub(r"\s*\*/\s*$", "", text.strip())
+    out_lines: list[str] = []
+    for ln in text.splitlines():
+        ln = re.sub(r"^\s*\*\s?", "", ln)
+        out_lines.append(ln.rstrip())
+    return "\n".join(out_lines).strip()
+
+
+def extract_javadoc_above_method(lines: list[str], line1: int) -> str | None:
+    """
+    取方法声明行 **正上方** 的 Javadoc（``/** ... */``），不含行尾 ``//`` 注释。
+
+    ``line1`` 为 1-based；若指向注解或方法体内，会先尝试对齐到方法签名行。
+    若紧贴本方法的是上一方法的收尾 ``}``（中间无 Javadoc），返回 ``None``，避免误把更上方的
+    Javadoc + 整段方法体收进来。
+    """
+    if not lines:
+        return None
+    sig_idx = _best_method_line_index(lines, line1)
+    j = sig_idx - 1
+    while j >= 0:
+        s = lines[j].strip()
+        if s == "":
+            j -= 1
+            continue
+        if s.startswith("@"):
+            j -= 1
+            continue
+        break
+    if j < 0:
+        return None
+    if _line_is_bare_close_brace(lines[j]):
+        return None
+    k = j
+    while k >= 0:
+        if "/**" in lines[k]:
+            block = _collect_javadoc_block_from_opening(lines, k)
+            if block:
+                return _strip_javadoc_raw(block) or None
+            return None
+        k -= 1
+    return None
 
 
 def _method_window_has_transactional(lines: list[str], line1: int) -> bool:
@@ -159,7 +259,7 @@ def _in_degree(edges: list[Any]) -> dict[str, int]:
 def annotate_downchain_business(payload: dict[str, Any], project_root: Path | None = None) -> dict[str, Any]:
     """
     就地扩展 ``payload``：为每个 ``nodes[*]`` 写入 ``businessScore``、``businessCandidate``、``businessSignals``；
-    顶层写入 ``keyMethods``（按分数降序）、``businessPhase`` = ``D1``。
+    顶层写入 ``keyMethods``（按分数降序）、``businessPhase`` = ``"step6"``。
 
     若 ``projectRoot`` 未传入，从 ``payload['query']['projectRoot']`` 读取。
     """
@@ -174,7 +274,7 @@ def annotate_downchain_business(payload: dict[str, Any], project_root: Path | No
     edges = payload.get("edges") if isinstance(payload.get("edges"), list) else []
     if not nodes:
         payload["keyMethods"] = []
-        payload["businessPhase"] = "D1"
+        payload["businessPhase"] = "step6"
         return payload
 
     root_key = _downchain_root_key(nodes, edges)
@@ -236,6 +336,11 @@ def annotate_downchain_business(payload: dict[str, Any], project_root: Path | No
         n["businessCandidate"] = score >= 4
 
         if n["businessCandidate"]:
+            ls_km = cache.lines(rel) if rel else []
+            jd_km = ""
+            if ls_km and line1 > 0:
+                jx = extract_javadoc_above_method(ls_km, line1)
+                jd_km = jx if jx else ""
             key_rows.append(
                 {
                     "nodeKey": nk,
@@ -245,12 +350,13 @@ def annotate_downchain_business(payload: dict[str, Any], project_root: Path | No
                     "line": n.get("line", ""),
                     "score": score,
                     "signals": list(signals),
+                    "javadoc": jd_km,
                 }
             )
 
     key_rows.sort(key=lambda r: (-int(r.get("score", 0)), str(r.get("class", "")), str(r.get("method", ""))))
     payload["keyMethods"] = key_rows
-    payload["businessPhase"] = "D1"
+    payload["businessPhase"] = "step6"
     return payload
 
 
@@ -315,15 +421,19 @@ def format_business_md(
     project_root: Path,
     key_methods: list[dict[str, Any]],
     *,
-    title: str = "关键业务候选（阶段 D）",
+    title: str = "关键业务候选（step6）",
+    include_javadoc: bool = True,
 ) -> str:
-    """供 ``business.md`` 与人读的聚合视图。"""
+    """供 ``business.md`` 与人读的聚合视图；默认根据 ``file`` + ``line`` 从源码解析方法 Javadoc。"""
+    cache = _SourceLineCache(project_root) if include_javadoc else None
     lines = [
         f"# {title}",
         "",
         f"- **projectRoot**: `{project_root.resolve()}`",
         "- **说明**: 由各 REST 向下子图报告（`.md` 文末 JSON 或纯 `.json`）的 `keyMethods` 合并去重；"
-        "启发式见 `jdtls_lsp.business_summary` 包（D1）；与 `--business-summary` 对应。",
+        "启发式见 `jdtls_lsp.business_summary` 包（step6）；与 `--business-summary` 对应。",
+        "- **Javadoc**: 写 ``business.md`` 时始终在 ``projectRoot`` 下按 ``file``+``line`` 从源码解析 ``/** … */``；"
+        "不采用向下链 JSON 内缓存的 ``javadoc``，以免与旧版提取器结果混淆。",
         "",
         "## 合并列表（按 score 降序）",
         "",
@@ -347,15 +457,35 @@ def format_business_md(
         src_s = ", ".join(str(x) for x in src[:6])
         if len(src) > 6:
             src_s += ", …"
+        jd = ""
+        if include_javadoc and cache:
+            rel = str(f).strip()
+            try:
+                ln_i = int(ln) if ln is not None and str(ln).strip() != "" else 0
+            except (TypeError, ValueError):
+                ln_i = 0
+            if rel and ln_i > 0:
+                ls = cache.lines(rel)
+                if ls:
+                    jx = extract_javadoc_above_method(ls, ln_i)
+                    jd = (jx or "").strip()
         lines.append(f"{i}. **`{c}.{m[:80]}{'…' if len(str(m)) > 80 else ''}`** — `{f}:{ln}` — score=`{sc}` — {sig_s}")
         if src_s:
             lines.append(f"   - 来源: {src_s}")
+        if include_javadoc and jd:
+            lines.append("   - **Javadoc**:")
+            lines.append("")
+            lines.append("     ```text")
+            for jd_line in jd.split("\n"):
+                lines.append(f"     {jd_line}")
+            lines.append("     ```")
     lines.append("")
     return "\n".join(lines)
 
 
 __all__ = [
     "annotate_downchain_business",
+    "extract_javadoc_above_method",
     "format_business_md",
     "merge_key_methods_from_downchain_files",
 ]

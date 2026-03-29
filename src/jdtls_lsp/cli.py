@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d_scan = rdg.add_parser(
         "scan",
-        help="[step1] A1：Maven/Gradle 模块与构建线索扫描（无 JDTLS）",
+        help="[step1] Maven/Gradle 模块与构建线索扫描（无 JDTLS）",
     )
     d_scan.add_argument("project", help="项目根目录")
 
@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d_tbl = rdg.add_parser(
         "db-tables",
-        help="[step3] A2.5：用户表清单 + 代码轻量抽取 → tables-manifest（无 JDTLS）",
+        help="[step3] 用户表清单 + 代码轻量抽取 → tables-manifest（无 JDTLS）",
     )
     d_tbl.add_argument("project", help="项目根目录")
     d_tbl.add_argument(
@@ -269,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d_sym = rdg.add_parser(
         "symbols",
-        help="[step1 补充] A3：轻量扫描顶层类型按包聚合（无 JDTLS）",
+        help="[step1 补充] 轻量扫描顶层类型按包聚合（无 JDTLS）",
     )
     d_sym.add_argument("project", help="项目根目录")
     d_sym.add_argument(
@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d_bun = rdg.add_parser(
         "bundle",
-        help="[step8 编排] A4：写 design/；默认 step1–3，可选 step4–6（--rest-callchains-down / --table-callchains-up / --queries / --business-summary）",
+        help="[step8 编排] 写 design/；默认 step1–3，可选 step4–6（--rest-callchains-down / --table-callchains-up / --queries / --business-summary）",
     )
     d_bun.add_argument("project", help="项目根目录")
     d_bun.add_argument(
@@ -300,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     d_bun.add_argument(
         "--skip-symbols",
         action="store_true",
-        help="不跑 [step1 补充] A3（symbols-by-package.json）",
+        help="不跑 [step1 补充] symbols（symbols-by-package.json）",
     )
     d_bun.add_argument(
         "--skip-callchain",
@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     d_bun.add_argument(
         "--skip-table-manifest",
         action="store_true",
-        help="跳过 [step3]：不生成 tables-manifest.json（A2.5）",
+        help="跳过 [step3]：不生成 tables-manifest.json",
     )
     d_bun.add_argument("--skip-scan", action="store_true", help="跳过 [step1] modules：不生成 modules.json")
     d_bun.add_argument(
@@ -389,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     d_bun.add_argument("--max-table-java-files", type=int, default=8_000)
     d_bun.add_argument("--max-table-xml-files", type=int, default=2_000)
-    d_bun.add_argument("--glob", default="**/src/main/java/**/*.java", help="[step1 补充] A3 轻量扫描 glob")
+    d_bun.add_argument("--glob", default="**/src/main/java/**/*.java", help="[step1 补充] 轻量扫描 glob")
     d_bun.add_argument("--max-symbol-files", type=int, default=200)
     d_bun.add_argument("--max-rest-files", type=int, default=8_000)
     d_bun.add_argument("--callchain-depth", type=int, default=20)

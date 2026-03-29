@@ -7,6 +7,7 @@ step8：bundle 写 ``index.md`` 与摘要。
 
 from jdtls_lsp.business_summary import (
     annotate_downchain_business,
+    extract_javadoc_above_method,
     format_business_md,
     merge_key_methods_from_downchain_files,
 )
@@ -25,6 +26,7 @@ from jdtls_lsp.reverse_design.table_manifest import build_table_manifest, normal
 
 __all__ = [
     "annotate_downchain_business",
+    "extract_javadoc_above_method",
     "batch_symbols_by_package",
     "build_table_manifest",
     "format_business_md",

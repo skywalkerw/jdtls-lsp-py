@@ -31,7 +31,7 @@ def scan_java_top_level_types(source: str) -> list[dict[str, Any]]:
     从源码中提取 **文件顶层** 的类型声明（``class`` / ``interface`` / ``enum`` / ``record``）。
 
     跳过注释与字符串内的大括号；在顶层忽略注解参数里的 ``{…}``（通过 ``depth==0`` 时的括号深度）。
-    不解析方法体内部，故不列出成员。对非常规排版可能漏报或误报；适合设计导出 A3。
+    不解析方法体内部，故不列出成员。对非常规排版可能漏报或误报；适合 **step1 补充**（symbols）设计导出。
     """
     n = len(source)
     i = 0

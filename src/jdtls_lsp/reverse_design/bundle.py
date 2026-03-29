@@ -1,6 +1,6 @@
 """step8 主入口：聚合 step1–step3（扫描），可选 step4–step6（调用链与业务摘要），写入 ``design/``。
 
-实现上对应 A4（A1–A3 + 可选 callchain + ``--business-summary``），目录布局见 ``run_design_bundle``。
+编排 **step1–8**（见 ``需求.md``），目录布局见 ``run_design_bundle``。
 """
 
 from __future__ import annotations
@@ -141,14 +141,14 @@ def run_design_bundle(
     }
 
     if not skip_scan:
-        _log.info("reverse-design bundle: [step1] running A1 scan_modules")
+        _log.info("reverse-design bundle: [step1] running scan_modules")
         mod = scan_modules(root)
         p = data / "modules.json"
         _write_json(p, mod)
         summary["artifacts"].append(str(p.relative_to(output_dir)))
         summary["moduleCount"] = len(mod.get("modules") or [])
         _log.info(
-            "reverse-design bundle: A1 done path=%s buildSystem=%s moduleCount=%s",
+            "reverse-design bundle: [step1] done path=%s buildSystem=%s moduleCount=%s",
             p.relative_to(output_dir),
             mod.get("buildSystem"),
             summary["moduleCount"],
@@ -157,7 +157,7 @@ def run_design_bundle(
     rest_map_for_down: dict[str, Any] | None = None
 
     if not skip_rest_map:
-        _log.info("reverse-design bundle: [step2] running A2 rest_map max_files=%s", max_rest_map_files)
+        _log.info("reverse-design bundle: [step2] running rest_map max_files=%s", max_rest_map_files)
         rest = scan_rest_map(root, max_files=max_rest_map_files)
         rest_map_for_down = rest
         p = data / "rest-map.json"
@@ -167,7 +167,7 @@ def run_design_bundle(
         _mermaid_rest_preview(rest, graphs / "rest-map.mmd")
         summary["artifacts"].append(str((graphs / "rest-map.mmd").relative_to(output_dir)))
         _log.info(
-            "reverse-design bundle: A2 done endpoints=%s mmd=%s",
+            "reverse-design bundle: [step2] done endpoints=%s mmd=%s",
             summary["endpointCount"],
             (graphs / "rest-map.mmd").relative_to(output_dir),
         )
@@ -191,7 +191,7 @@ def run_design_bundle(
 
     if not skip_table_manifest:
         _log.info(
-            "reverse-design bundle: [step3] running A2.5 table_manifest java_max=%s xml_max=%s",
+            "reverse-design bundle: [step3] running table_manifest java_max=%s xml_max=%s",
             max_table_java_files,
             max_table_xml_files,
         )
@@ -206,7 +206,7 @@ def run_design_bundle(
         )
         if tm.get("error"):
             summary["warnings"].append(tm["error"])
-            _log.warning("reverse-design bundle: A2.5 table_manifest failed %s", tm["error"])
+            _log.warning("reverse-design bundle: [step3] table_manifest failed %s", tm["error"])
         else:
             manifest_for_callchains = tm
             p = data / "tables-manifest.json"
@@ -225,7 +225,7 @@ def run_design_bundle(
                     + ("…" if len(tm["unresolvedTables"]) > 12 else "")
                 )
             _log.info(
-                "reverse-design bundle: A2.5 done path=%s canonical=%s hits=%s unresolved=%s",
+                "reverse-design bundle: [step3] done path=%s canonical=%s hits=%s unresolved=%s",
                 p.relative_to(output_dir),
                 len(tm.get("canonicalTables") or []),
                 tm.get("extractedHitCount", 0),
@@ -249,7 +249,7 @@ def run_design_bundle(
 
     if not skip_symbols:
         _log.info(
-            "reverse-design bundle: [step1] running A3 symbols glob=%s max_files=%s",
+            "reverse-design bundle: [step1 补充] running symbols glob=%s max_files=%s",
             glob_pattern,
             max_symbol_files,
         )
@@ -261,7 +261,7 @@ def run_design_bundle(
         )
         if sym.get("error"):
             summary["warnings"].append(sym["error"])
-            _log.warning("reverse-design bundle: A3 symbols failed %s", sym["error"])
+            _log.warning("reverse-design bundle: [step1 补充] symbols failed %s", sym["error"])
         else:
             p = data / "symbols-by-package.json"
             _write_json(p, sym)
@@ -270,7 +270,7 @@ def run_design_bundle(
             if sym.get("errors"):
                 summary["warnings"].extend(str(e) for e in sym["errors"][:10])
             _log.info(
-                "reverse-design bundle: A3 done packages=%s files=%s symbol_errors=%s",
+                "reverse-design bundle: [step1 补充] done packages=%s files=%s symbol_errors=%s",
                 sym.get("packageCount", 0),
                 sym.get("fileCount", 0),
                 len(sym.get("errors") or []),
@@ -532,7 +532,7 @@ def run_design_bundle(
     lines.extend(
         [
             "",
-            "## 设计约定（阶段 A–D 与 step 对照）",
+            "## 设计约定（与 step 编号）",
             "",
             "- **step2 / REST 外向锚点**：读 `data/rest-map.json`，用 **类#方法 + 行** 作为 **step4** `callchain-down` 或 **step7** `analyze` 入口。",
             "- **step4**：`reverse-design bundle --rest-callchains-down` 对每端点跑 `callchain-down` → `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`（Markdown，文末嵌入完整 JSON），汇总 `rest-callchains-down-summary.json`（按 Controller 分组，键同 `data/callchain-down-rest/<Controller>/`；与同次 bundle 内 **step5 / step5′** 共用一次 JDTLS）。",

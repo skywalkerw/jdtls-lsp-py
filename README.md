@@ -80,7 +80,7 @@ jdtls-lsp -v callchain-up /path/to/project --query foo --format json 2> jdtls-ls
 | --------------------------- | --------------------------------------------------- |
 | `JDTLS_LSP_LOG`             | `debug` / `info` / `warning` / `error`（未传 `-v` 时生效） |
 | `JDTLS_LSP_LOG_MAX_PAYLOAD` | 单条日志里 JSON 序列化最大字符数（默认约 12000）                      |
-| `JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT` | **`analyze documentSymbol`** 单次 `textDocument/documentSymbol` 等待秒数（默认 **600**；**A3 设计导出已改为轻量扫描，不经 LSP**） |
+| `JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT` | **`analyze documentSymbol`** 单次 `textDocument/documentSymbol` 等待秒数（默认 **600**；**设计导出中的 `symbols` 为轻量扫描，不经 LSP**） |
 
 
 **子命令**
@@ -380,7 +380,7 @@ jdtls-lsp callchain-down /path/to/project --class Foo --method bar --max-branche
 
 **`entrypoints`** 负责非 HTTP 类入口；**REST 映射**见 **`reverse-design rest-map`**（[下一小节](#rest-映射reverse-design-rest-map)）。
 
-### `entrypoints`（阶段 B3）
+### `entrypoints`（非 HTTP 静态入口）
 
 不启动 JDTLS，仅在工程内扫描 `*.java`（跳过 `target`/`build` 等目录），按**行**做启发式匹配（同一行可产生多条不同 `kind` 记录）。
 
@@ -477,13 +477,13 @@ jdtls-lsp reverse-design { scan | rest-map | db-tables | symbols | bundle } ...
 ```
 
 
-| 子命令                           | step   | 阶段    | 依赖 JDTLS | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ----------------------------- | ---- | ----- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reverse-design scan <project>`       | step1 | A1    | 否        | 解析根目录 `pom.xml`（`modules` / `artifactId`）与 `settings.gradle*`（`include`），输出 JSON                                                                                                                                                                                                                                                                                                                                                                         |
-| `reverse-design rest-map <project>`   | step2 | A2    | 否        | **静态入口扫描**（HTTP）：启发式 `@GetMapping` / `@RequestMapping` 等（**非** AST；与运行时路由可能不完全一致）                                                                                                                                                                                                                                                                                                                                                                                       |
-| `reverse-design db-tables <project>`  | step3 | A2.5  | **否**    | **`tables-manifest` JSON**：`@Table`、含 SQL 语义的 **字符串字面量**（`FROM`/`JOIN`/`INTO`/`UPDATE`）、MyBatis **`table=`** 与 XML 内字面量 SQL；**`--tables-file`** / **`--tables`** 提供**规范表名**（`canonicalTables`、`unresolvedTables`、`extractedOnly`）                                                                                                                                                                                                                                                                        |
-| `reverse-design symbols <project>`    | step1 补充 | A3    | **否**    | **轻量扫描**（注释/字符串感知）匹配 glob 的 `*.java`，按 **package** 聚合顶层 `class` / `interface` / `enum` / `record`（无成员、无嵌套类型；大文件也秒级）                                                                                                                                                                                                                                                                                                                                                                                        |
-| `reverse-design bundle <project>`     | step8 编排 | A4    | 可选       | **一键**：默认 step1–3 + 可选 step4–6（**step4/step5/step5′ 在同一次 bundle 内共用一次 JDTLS**）+ 可选 **`--business-summary`**。输出 **`-o` / `--output`**（默认 `./design`）。详见 **[reverse-design bundle 详细说明](#reverse-design-bundle-a4-详细说明)**。 |
+| 子命令                           | step   | 依赖 JDTLS | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------- | ---- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reverse-design scan <project>`       | step1 | 否        | 解析根目录 `pom.xml`（`modules` / `artifactId`）与 `settings.gradle*`（`include`），输出 JSON                                                                                                                                                                                                                                                                                                                                                                         |
+| `reverse-design rest-map <project>`   | step2 | 否        | **静态入口扫描**（HTTP）：启发式 `@GetMapping` / `@RequestMapping` 等（**非** AST；与运行时路由可能不完全一致）                                                                                                                                                                                                                                                                                                                                                                                       |
+| `reverse-design db-tables <project>`  | step3 | **否**    | **`tables-manifest` JSON**：`@Table`、含 SQL 语义的 **字符串字面量**（`FROM`/`JOIN`/`INTO`/`UPDATE`）、MyBatis **`table=`** 与 XML 内字面量 SQL；**`--tables-file`** / **`--tables`** 提供**规范表名**（`canonicalTables`、`unresolvedTables`、`extractedOnly`）                                                                                                                                                                                                                                                                        |
+| `reverse-design symbols <project>`    | step1 补充 | **否**    | **轻量扫描**（注释/字符串感知）匹配 glob 的 `*.java`，按 **package** 聚合顶层 `class` / `interface` / `enum` / `record`（无成员、无嵌套类型；大文件也秒级）                                                                                                                                                                                                                                                                                                                                                                                        |
+| `reverse-design bundle <project>`     | step8 编排 | 可选       | **一键**：默认 step1–3 + 可选 step4–6（**step4/step5/step5′ 在同一次 bundle 内共用一次 JDTLS**）+ 可选 **`--business-summary`**。输出 **`-o` / `--output`**（默认 `./design`）。详见 **[reverse-design bundle 详细说明](#reverse-design-bundle-详细说明)**。 |
 
 
 ```bash
@@ -496,7 +496,7 @@ jdtls-lsp reverse-design rest-map /path/to/project --max-files 8000
 # step3：用户表清单 + 抽取（可与 bundle 共用 --tables-file / --tables）
 jdtls-lsp reverse-design db-tables /path/to/project --tables-file ./tables.txt
 
-# step1 补充 / A3（无 JDTLS；大项目可调小 --max-files）
+# step1 补充 / symbols（无 JDTLS；大项目可调小 --max-files）
 jdtls-lsp reverse-design symbols /path/to/project --glob '**/src/main/java/**/*.java' --max-files 500
 
 # step8 编排：跳过符号与调用链（只要 step1 模块 + step2/3 扫描时）
@@ -521,9 +521,9 @@ jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --skip-symbols 
 jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --skip-callchain --business-summary
 ```
 
-### reverse-design bundle A4 详细说明
+### reverse-design bundle 详细说明
 
-**step8 编排**：在**项目根**上顺序执行 **step1–3**（A1、A2、A2.5、A3）与可选 **step4–6**，最后写 **step8** `index.md` 与 stdout 摘要。**输出目录**默认 `./design/`。**目录层次**：根目录含 `index.md`（**step8**）、可选 `business.md`（**step6**）、汇总 JSON；**`data/`** 含 step1–3 扫描与各 callchain 明细；**`graphs/`** 含 **step2** Mermaid。**step4/step5/step5′** 在**未** `--skip-callchain` 且至少启用其一 时**共用一次 JDTLS**。**step6**：`--business-summary` 合并 `keyMethods` → `business.md`。**step7** 不在 bundle 内，见下文「耗时与日志」后 analyze 说明。
+**step8 编排**：在**项目根**上顺序执行 **step1–3**（含 **step1 补充** `symbols`）与可选 **step4–6**，最后写 **step8** `index.md` 与 stdout 摘要。**输出目录**默认 `./design/`。**目录层次**：根目录含 `index.md`（**step8**）、可选 `business.md`（**step6**）、汇总 JSON；**`data/`** 含 step1–3 扫描与各 callchain 明细；**`graphs/`** 含 **step2** Mermaid。**step4/step5/step5′** 在**未** `--skip-callchain` 且至少启用其一 时**共用一次 JDTLS**。**step6**：`--business-summary` 合并 `keyMethods` → `business.md`。**step7** 不在 bundle 内，见下文「耗时与日志」后 analyze 说明。
 
 **基本命令**：
 
@@ -540,24 +540,24 @@ design-out/
   table-callchains-summary.json   # 仅当 --table-callchains-up：按物理表分组汇总（键同 data/callchain-up-table/<表>/）
   rest-callchains-down-summary.json  # 仅当 --rest-callchains-down：按 Controller FQCN 分组汇总（键同 data/callchain-down-rest/<Controller>/）
   data/
-    modules.json                  # step1 / A1（除非 --skip-scan）
-    rest-map.json                 # step2 / A2（除非 --skip-rest-map）
-    tables-manifest.json          # step3 / A2.5（除非 --skip-table-manifest）
-    symbols-by-package.json       # step1 补充 / A3（除非 --skip-symbols）
+    modules.json                  # step1（除非 --skip-scan）
+    rest-map.json                 # step2（除非 --skip-rest-map）
+    tables-manifest.json          # step3（除非 --skip-table-manifest）
+    symbols-by-package.json       # step1 补充（除非 --skip-symbols）
     callchain-up-<安全文件名>.md       # 仅当 --queries
     callchain-up-table/<物理表名>/callchain-up-table-<表>.md  # 仅当 --table-callchains-up 且该表成功
     callchain-up-table/<物理表名>/…-sql-NN.md、…-mapper-NN.md  # 仅当同时 --table-callchains-up-extra
     callchain-down-rest/<Controller FQCN>/callchain-down-rest-<METHOD>_<path>.md  # step4；含 step6 节点字段（文末 JSON）
   graphs/
-    rest-map.mmd                  # step2 / A2（除非 --skip-rest-map）
+    rest-map.mmd                  # step2（除非 --skip-rest-map）
 ```
 
 **bundle 内执行顺序**（与 `需求.md` **step 叙述序号**不完全一致，语义对应 step1–6、8；前一步失败时后续仍可能继续，`warnings` 会记录）：
 
-1. **step1 / A1** `modules.json`（`--skip-scan` 则跳过）
-2. **step2 / A2** `rest-map.json` + `graphs/rest-map.mmd`（`--skip-rest-map` 则跳过）
-3. **step3 / A2.5** `tables-manifest.json`（`--skip-table-manifest` 则跳过）
-4. **step1 补充 / A3** `symbols-by-package.json`（`--skip-symbols` 则跳过；**无 JDTLS**）
+1. **step1** `modules.json`（`--skip-scan` 则跳过）
+2. **step2** `rest-map.json` + `graphs/rest-map.mmd`（`--skip-rest-map` 则跳过）
+3. **step3** `tables-manifest.json`（`--skip-table-manifest` 则跳过）
+4. **step1 补充** `symbols-by-package.json`（`--skip-symbols` 则跳过；**无 JDTLS**）
 5. **step5′ 关键字向上**：`--queries` 且**未** `--skip-callchain` → `data/callchain-up-*.md`
 6. **step5 按表向上**：`--table-callchains-up` 且**未** `--skip-callchain` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、根目录 **`table-callchains-summary.json`**；若再加 **`--table-callchains-up-extra`** → 同目录下另含 `*-sql-NN.md`、`*-mapper-NN.md`（上限见 `--max-table-up-extra-anchors`）
 7. **step4 REST 向下**：`--rest-callchains-down` 且**未** `--skip-callchain` → `data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md`、**`rest-callchains-down-summary.json`**。**锚点**：若存在 ``…service.impl.XxxServiceImpl`` 则从实现类起算，否则 Controller。可用 **`--max-rest-down-endpoints N`** 限流
@@ -587,15 +587,15 @@ design-out/
 | `--rest-down-depth` | `16` | 向下 BFS 最大深度（同 `callchain-down --max-depth`） |
 | `--rest-down-max-nodes` | `500` | 向下子图节点上限（同 `callchain-down --max-nodes`） |
 | `--rest-down-max-branches` | `48` | 每层 outgoing 分支上限（同 `callchain-down --max-branches`） |
-| `--business-summary` | 关 | **step6**（阶段 D）：递归合并 `data/callchain-down-rest/**/callchain-down-rest-*.md`（及历史上 `data/` 根下同名扁平 `.md`/`.json`）的 `keyMethods` → 根目录 `business.md`。可与 **`--skip-callchain`** 同用（只扫描已有报告；无 `keyMethods` 时会现场补算）。**不依赖**本轮是否 `--rest-callchains-down`，但无匹配文件时 `mergedCount` 为 0 |
+| `--business-summary` | 关 | **step6**：递归合并 `data/callchain-down-rest/**/callchain-down-rest-*.md`（及历史上 `data/` 根下同名扁平 `.md`/`.json`）的 `keyMethods` → 根目录 `business.md`。可与 **`--skip-callchain`** 同用（只扫描已有报告；无 `keyMethods` 时会现场补算）。**不依赖**本轮是否 `--rest-callchains-down`，但无匹配文件时 `mergedCount` 为 0 |
 | `--tables-file` | 无 | 每行一个规范表名（`#` 注释）；与 `reverse-design db-tables` 相同语义，用于 `canonicalTables` / `unresolvedTables` |
 | `--tables` | 空 | 逗号分隔表名，与 `--tables-file` 合并 |
 | `--strict-tables-only` | 关 | `tables-manifest.json` 中不列出 `extractedOnly`（仍参与抽取与锚点） |
-| `--max-table-java-files` | `8000` | A2.5 最多扫描的 `.java` 数 |
-| `--max-table-xml-files` | `2000` | A2.5 最多扫描的 `.xml` 数（MyBatis 等） |
-| `--glob` | `**/src/main/java/**/*.java` | A3 轻量扫描的 glob（相对项目根） |
-| `--max-symbol-files` | `200` | A3 最多处理的 `.java` 文件数 |
-| `--max-rest-files` | `8000` | A2 REST 扫描最多 `.java` 文件数 |
+| `--max-table-java-files` | `8000` | **step3**（tables-manifest）最多扫描的 `.java` 数 |
+| `--max-table-xml-files` | `2000` | **step3** 最多扫描的 `.xml` 数（MyBatis 等） |
+| `--glob` | `**/src/main/java/**/*.java` | **step1 补充** 轻量扫描的 glob（相对项目根） |
+| `--max-symbol-files` | `200` | **step1 补充** 最多处理的 `.java` 文件数 |
+| `--max-rest-files` | `8000` | **step2** REST 扫描最多 `.java` 文件数 |
 | `--callchain-depth` | `20` | `callchain-up` 最大向上深度（`--queries` 与 `--table-callchains-up` 共用） |
 | `--jdtls` | 环境/默认路径 | JDTLS 安装目录 |
 | `--quiet` | 关 | TTY 下也不自动升到 INFO 日志；适合脚本只收 stdout JSON |
@@ -610,11 +610,11 @@ design-out/
 - 若**未** skip rest-map：本次运行会生成 `data/rest-map.json`，并按其跑 REST 向下链。
 - 若 **skip** rest-map：不会重写 `rest-map.json`；若输出目录里**已有** `data/rest-map.json`，仍会读取并跑 `--rest-callchains-down`；若不存在，则跳过并在 `warnings` 中说明。
 
-**`--business-summary`（step6 / 阶段 D）**：
+**`--business-summary`（step6）**：
 
 - 依赖 **`data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`**（或遗留扁平 `.md`/`.json`）：通常与 **`--rest-callchains-down`** 同次或前次 bundle 产物配合使用。
 - **独立使用**：`--skip-callchain --business-summary` 仅根据输出目录里**已有**的向下链 JSON 生成/覆盖 `business.md`，适合 CI 分步或只刷新聚合视图。
-- 单条 `callchain-down` JSON 内已含节点级 **`businessScore` / `businessCandidate` / `businessSignals`** 与顶层 **`keyMethods`**；`business.md` 为跨端点合并去重后的可读列表。
+- 单条 `callchain-down` JSON 内已含节点级 **`businessScore` / `businessCandidate` / `businessSignals`** 与顶层 **`keyMethods`**（`annotate_downchain_business` 可写入 **`javadoc`** 供 JSON 阅读）；顶层 **`businessPhase`** 为 **`step6`**。生成 **`business.md`** 时 **始终按 `file`+`line` 从源码重新解析** Javadoc，不沿用链上 JSON 内缓存，以保证与当前提取规则一致。
 
 **stdout 摘要 JSON**（成功时）常见字段：
 
@@ -628,14 +628,14 @@ design-out/
 
 **耗时与日志**：
 
-- **快**：A1、A2、A2.5、A3 均为本地扫描（A3 已为轻量实现，一般秒级～分钟级，视仓库大小与 `--max-symbol-files`）。
+- **快**：**step1–3** 与 **step1 补充**（`symbols`）均为本地扫描（轻量实现，一般秒级～分钟级，视仓库大小与 `--max-symbol-files`）。
 - **慢**：在 **bundle** 中 **step5′/5/4** **共用一次 JDTLS**；单次 `callchain-up`/`down` 命令仍为每次各启 JVM（**step7**）。向下链在端点多时仍可能较慢，可配合 **`--max-rest-down-endpoints`** 试跑。
 - 在终端直接运行时，若未 `--quiet` 且未手动设日志级别，bundle 会将日志提到 **INFO**，避免「无输出像卡住」；需要完整 JSON 可重定向 stdout，进度看 stderr。
 
 **示例**：
 
 ```bash
-# 全量默认（含 A3 与 manifest；无调用链）
+# 全量默认（含 symbols 与 manifest；无调用链）
 jdtls-lsp reverse-design bundle /path/to/project -o ./design
 
 # 只要结构 + REST + 表清单，不要符号、不要 JDTLS
@@ -660,7 +660,7 @@ jdtls-lsp reverse-design bundle /path/to/project -o ./design --skip-symbols --re
 jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --quiet > bundle-summary.json
 ```
 
-**排查「卡住」**：**step1 补充 / A3** 已为轻量扫描，一般很快。bundle 若慢，多在 **step4/step5/step5′**（多关键字、多表、多 REST 端点 → 大量 LSP 往返；**同次 bundle 内通常只启一次 JDTLS**）。**step7** 单独执行 **`callchain-up` / `callchain-down`** 仍为每次各启 JVM。单文件 **`analyze … documentSymbol`** 仍可能极慢，见 **`JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT`**。若 **LSP 管道僵死**（旧版 `jrpc` 写锁）：升级已修复版本。
+**排查「卡住」**：**step1 补充**（`symbols`）已为轻量扫描，一般很快。bundle 若慢，多在 **step4/step5/step5′**（多关键字、多表、多 REST 端点 → 大量 LSP 往返；**同次 bundle 内通常只启一次 JDTLS**）。**step7** 单独执行 **`callchain-up` / `callchain-down`** 仍为每次各启 JVM。单文件 **`analyze … documentSymbol`** 仍可能极慢，见 **`JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT`**。若 **LSP 管道僵死**（旧版 `jrpc` 写锁）：升级已修复版本。
 
 **库 API**：`jdtls_lsp.reverse_design.run_design_bundle`（**step8 编排**）、`scan_modules`（`reverse_design.scan_modules`，**step1**）、`jdtls_lsp.entry_scan.scan_rest_map`（**step2**，亦可从 `jdtls_lsp.reverse_design` 再导出）、`build_table_manifest`（**step3**）、`batch_symbols_by_package`（`reverse_design.batch_symbols_by_package`，**step1 补充**）、`run_table_callchains_up` / `resolve_service_anchor_for_table`（**step5**，对应 `--table-callchains-up`）、`run_rest_callchains_down`（**step4**，对应 `--rest-callchains-down`）；**step6** 亦可 `jdtls_lsp.business_summary`（与 `reverse_design` 平级，对应 `--business-summary`）内 `merge_key_methods_from_downchain_files`、`format_business_md`、`annotate_downchain_business`。静态入口另见 `jdtls_lsp.entry_scan.scan_java_entrypoints`（或子模块 `entry_scan.java_entrypoints`）。
 
@@ -838,7 +838,7 @@ PYTHONPATH=src python3 -m jdtls_lsp analyze --help
 | `jrpc.py` → `q.get(timeout=...)` | 等 JSON-RPC 响应 |
 | `client.shutdown` → `send_request("shutdown")` | 优雅关闭 JVM |
 
-**处理**：升级已修复 **`jrpc` 写锁** 的版本；**A3 无 JDTLS**，若仅导出 `symbols-by-package.json` 可单独跑 **`reverse-design symbols`** 验证。**`shutdown` 阶段 KeyboardInterrupt** 会记日志并 **terminate/kill** JVM。
+**处理**：升级已修复 **`jrpc` 写锁** 的版本；**`symbols`（step1 补充）无 JDTLS**，若仅导出 `symbols-by-package.json` 可单独跑 **`reverse-design symbols`** 验证。**JVM shutdown** 时若遇 KeyboardInterrupt 会记日志并 **terminate/kill** JVM。
 
 ---
 

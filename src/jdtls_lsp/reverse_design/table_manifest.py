@@ -1,4 +1,4 @@
-"""step3：数据库表清单与轻量抽取（用户清单为准 + @Table / SQL 字面量 / MyBatis XML）。对应实现阶段 A2.5。"""
+"""step3：数据库表清单与轻量抽取（用户清单为准 + @Table / SQL 字面量 / MyBatis XML）。"""
 
 from __future__ import annotations
 

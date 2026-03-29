@@ -1,4 +1,4 @@
-"""step1 补充：**batch_symbols_by_package** — 轻量扫描 ``*.java`` 顶层类型并按 **package** 聚合（无 JDTLS）。对应实现阶段 A3。"""
+"""step1 补充：**batch_symbols_by_package** — 轻量扫描 ``*.java`` 顶层类型并按 **package** 聚合（无 JDTLS）。"""
 
 from __future__ import annotations
 

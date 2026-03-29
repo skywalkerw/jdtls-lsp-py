@@ -1,4 +1,4 @@
-"""step1：**scan_modules** — Maven / Gradle 工程概要（模块与构建线索，无 JDTLS）。对应实现阶段 A1。"""
+"""step1：**scan_modules** — Maven / Gradle 工程概要（模块与构建线索，无 JDTLS）。"""
 
 from __future__ import annotations
 

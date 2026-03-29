@@ -47,7 +47,7 @@
 - **信号（示例）**：`@Transactional`；被 **多条上游** 调用（入边多）；**向下** 直接/间接触及 **持久化 API**；方法名/类名含业务域关键词；用户给定 **关键字**（与现有 `callchain-up --query` 一致）。
 - **产出形态（目标）**：在 JSON/Markdown 中为节点打 **`businessCandidate: true`** 或单独 **`keyMethods[]`** 列表，并引用 **稳定锚点**（路径、行号、类#方法）。
 
-**说明**：**D1** 已在 **向下子图**（`callchain-down` / `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md` 文末 JSON）上落地：节点带 `businessScore` / `businessCandidate` / `businessSignals`，顶层 `keyMethods`；`reverse-design bundle --business-summary` 合并为根目录 **`business.md`**（扫描递归匹配，兼容历史上 `data/` 根下扁平 `callchain-down-rest-*.md`）。**向上链**（`callchain-up`）的同类标权仍为可选后续。
+**说明**：**step6** 已在 **向下子图**（`callchain-down` / `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md` 文末 JSON）上落地：节点带 `businessScore` / `businessCandidate` / `businessSignals`，顶层 `keyMethods`；`reverse-design bundle --business-summary` 合并为根目录 **`business.md`**（扫描递归匹配，兼容历史上 `data/` 根下扁平 `callchain-down-rest-*.md`）。**向上链**（`callchain-up`）的同类标权仍为可选后续。
 
 ### 1.4 数据库表识别（须兼容历史遗留工程）
 
@@ -88,7 +88,7 @@
 | **向下子图** | `callchain-down` / `trace_outgoing_subgraph_sync` | **需 JDTLS**；深度/分支上限 |
 | **报告** | `callchain/format.py` | 向上/向下 Markdown；`stopReason` 等 |
 | **链顶规则（与入口同源）** | `entry_scan/java_entry_patterns.py` | 供 `entrypoints` 与 callchain **stopReason** 等复用 |
-| **模块与符号背景** | `reverse-design scan` / `reverse-design symbols` / `reverse-design bundle` | **step1** + scan/symbols：A1 模块、A3 **轻量**顶层类型（**非**调用链主线，仅索引）；bundle 同时覆盖 step2–3 |
+| **模块与符号背景** | `reverse-design scan` / `reverse-design symbols` / `reverse-design bundle` | **step1**（模块扫描）+ **step1 补充**（**轻量**顶层类型索引，**非**调用链主线）；bundle 同时覆盖 **step2–3** |
 | **单次 LSP** | `analyze` | `definition`、`references`、`documentSymbol`（大文件可能慢）等 |
 
 **数据库锚点（现状）**：**已实现** **`jdtls-lsp reverse-design db-tables`** 与 **`reverse-design bundle`** 产出 **`data/tables-manifest.json`**（`build_table_manifest`）：**`--tables-file` / `--tables`** 为规范名；**`unresolvedTables` / `extractedOnly` / `anchorsByTable`** 见 schema。抽取覆盖 **§1.4** 中 **声明式 `@Table`、JDBC 字符串字面量内 SQL 片段、MyBatis `table=` 与 XML 字面量**；**字符串拼接 SQL** 仍为后续增强（见 §1.4）。
@@ -105,20 +105,20 @@
 4. **表维度**：对清单中每张表，用 **抽取/搜索** 得到锚点 → **`callchain-up`**；将 **抽取结果与清单 diff**（**`unresolvedTables`** / **`extractedOnly`**，§1.5）。
 5. 在导出 Markdown/JSON 上 **人工** 或 **后续自动化** 标出 **关键业务方法**（§1.3）。
 
-**bundle** 编排：**step5′** 用 **`--queries`** 预跑 **`callchain-up` JSON**；**step5** 用 **`--table-callchains-up`**；**step4** 用 **`--rest-callchains-down`**（与同次 bundle 内其它 callchain **共用一次 JDTLS**，可用 **`--max-rest-down-endpoints`** 限流）；**step6** 用 **`--business-summary`** → **`business.md`**。**step7** 仍以单点 **`analyze` / callchain** 为主。**不以 A3 符号表** 为主线索。
+**bundle** 编排：**step5′** 用 **`--queries`** 预跑 **`callchain-up` JSON**；**step5** 用 **`--table-callchains-up`**；**step4** 用 **`--rest-callchains-down`**（与同次 bundle 内其它 callchain **共用一次 JDTLS**，可用 **`--max-rest-down-endpoints`** 限流）；**step6** 用 **`--business-summary`** → **`business.md`**。**step7** 仍以单点 **`analyze` / callchain** 为主。**不以** `symbols-by-package` **轻量符号表** 为主线索。
 
 ---
 
-## 4. 阶段划分（压缩版）
+## 4. 与 `需求.md` 八步的对应（主线为 step 编号）
 
-与 **`需求.md` 八步**对应：**A** 覆盖 step1–3 与 step8 的扫描/汇总骨架；**B** 提供 step4/step5/step7 所用 `callchain-up`/`down` 与入口规则；**D** 对应 **step6**。
+文档与 CLI **只使用** **`需求.md` / 上文 §0** 的 **step1–step8** 编号；**不再使用**「阶段 A/B/C/D」或 **A1 / A2.5** 等字母标签。
 
-| 阶段 | 内容 | 状态 |
+| 能力块 | 涵盖 | 备注 |
 | --- | --- | --- |
-| **A** | `reverse-design`：step1（A1+A3）、step2（A2）、step3（A2.5）、step8 编排（A4 bundle） | **已实现** |
-| **B** | `callchain-up` / `callchain-down`、**静态入口**（`entrypoints` + `rest-map`）、`entry_scan.java_entry_patterns`（step4/step5/step7） | **已实现** |
-| **C** | 依赖树、配置草图、缓存 | **未实现** |
-| **D** | **step6**：关键逻辑候选（链上标权）、`business.md` | **D1 已实现**：`callchain-down` JSON 含 `businessCandidate` / `keyMethods`；`--business-summary` 写 `business.md`；step7 全文摘录与 LLM 叙述仍为后续 |
+| **扫描与汇总** | **step1–3**、**step8**（`reverse-design` / `bundle`） | 模块、REST 映射、表 manifest、轻量 symbols、`index.md` |
+| **调用链与入口** | **step4 / step5 / step5′**、**step7** 所用 `callchain-up`/`down`、**静态入口**（`entrypoints` + `rest-map`）、`entry_scan.java_entry_patterns` | 与 JDTLS 配合 |
+| **关键业务摘要** | **step6** | `keyMethods`、`business.md` |
+| **其它** | 依赖树、配置草图等 | 可选后续 |
 
 ---
 
@@ -126,7 +126,7 @@
 
 ```
                     ┌─────────────────────┐
-                    │ rest-map 静态入口(A2) │  REST 锚点：Path → 类#方法
+                    │ rest-map 静态入口（step2） │  REST 锚点：Path → 类#方法
                     └──────────┬──────────┘
                                │
        callchain-up ◄──────────┼──────────► callchain-down
@@ -146,8 +146,8 @@
 
 ## 6. 风险与约束
 
-- **JDTLS**：调用链与多数 `analyze` 操作依赖 JDTLS；**A3 轻量扫描不调用** `documentSymbol`。
-- **REST 表**：A2 为**正则启发式**，与运行时路由可能不完全一致。
+- **JDTLS**：调用链与多数 `analyze` 操作依赖 JDTLS；**step1 补充**（`symbols`）**轻量扫描不调用** `documentSymbol`。
+- **REST 表**：**step2**（`rest-map`）为**正则启发式**，与运行时路由可能不完全一致。
 - **DB**：除 JPA/MyBatis 外，须预期 **JDBC + 字符串拼接 SQL**（§1.4）；**用户表清单**（§1.5）可缩小误报，但 **清单有而代码无静态命中** 不代表表未使用（动态 SQL）。**以清单为准** 是产品与报告边界，不是运行时真理。
 - **合规**：仅用于自有或授权源码。
 
@@ -161,10 +161,10 @@
 | `callchain/` 包（`trace` + `format`） | 调用链追踪与 Markdown 展示 |
 | `entry_scan/java_entry_patterns.py` | 链顶与入口规则 |
 | `entry_scan/rest_http.py`（`scan_rest_map`） | REST 静态入口 / `rest-map` 锚点 |
-| `reverse_design/scan_modules.py` | **scan_modules**：Maven/Gradle 模块概要（A1） |
-| `reverse_design/scan_java_top_level_types.py` | **scan_java_top_level_types**：单文件顶层类型轻量解析（A3 子步骤） |
-| `reverse_design/batch_symbols_by_package.py` | **batch_symbols_by_package**：按包聚合轻量符号（A3） |
-| `jdtls_lsp/business_summary/`（与 `reverse_design/` 平级） | **step6 / D1**、CLI `--business-summary`：`annotate_downchain_business`、`merge_key_methods_from_downchain_files`、`format_business_md` |
+| `reverse_design/scan_modules.py` | **scan_modules**：Maven/Gradle 模块概要（**step1**） |
+| `reverse_design/scan_java_top_level_types.py` | **scan_java_top_level_types**：单文件顶层类型轻量解析（**step1 补充** 子步骤） |
+| `reverse_design/batch_symbols_by_package.py` | **batch_symbols_by_package**：按包聚合轻量符号（**step1 补充**） |
+| `jdtls_lsp/business_summary/`（与 `reverse_design/` 平级） | **step6**、CLI `--business-summary`：`annotate_downchain_business`、`extract_javadoc_above_method`、`merge_key_methods_from_downchain_files`、`format_business_md`（`business.md` 附方法 Javadoc） |
 | `reverse_design/bundle.py` | 一键产出 `design/` + 可选 `callchain-up-*` / `callchain-up-table/<表>/…` / `callchain-down-rest/<Controller>/…` Markdown（文末 JSON） |
 | `reverse_design/rest_callchains_down.py` | 从 `rest-map` 批量 `callchain-down`（CLI `--rest-callchains-down`） |
 | `reverse_design/table_callchains_up.py` | 按表 `callchain-up`（CLI `--table-callchains-up`） |
@@ -175,9 +175,9 @@
 
 1. **文档与 skill**：智能体说明改为 **「先 rest-map → 再 callchain-down/up」**；可选新增 **`java-reverse-design`** skill（仅描述编排，不展开全表 analyze）。
 2. **产品化 DB 锚点**：实现 **表抽取**（§1.4）+ **用户清单输入**（§1.5：`--tables-file` 等）；输出 **`tables-manifest.json`**：`canonicalTables`（以清单为准）、`extractedHits`、`unresolvedTables`、`extractedOnly`；支持 **`strict` / `loose`** 是否展示清单外抽取。
-3. ~~**D1 最小实现**~~：**callchain-down** 已写 **`keyMethods`** 与节点 **`businessCandidate`**；bundle **`--business-summary`** → **`business.md`**。可选：对 **callchain-up** 对称标权、链上代码摘录块。
+3. ~~**step6 业务摘要**~~：**callchain-down** 已写 **`keyMethods`** 与节点 **`businessCandidate`**；bundle **`--business-summary`** → **`business.md`**。可选：对 **callchain-up** 对称标权、链上代码摘录块。
 4. **测试**：小 Spring 样例工程：单 REST → Service → Repository → 表名 **可回归** 路径。
 
 ---
 
-*本文为设计方案，非排期承诺；实现状态随仓库更新（`reverse-design` A1–A4、`callchain-up`/`down`、`entry_scan` 等）。*
+*本文为设计方案，非排期承诺；实现状态随仓库更新（`reverse-design` **step1–8** 编排、`callchain-up`/`down`、`entry_scan` 等）。*
