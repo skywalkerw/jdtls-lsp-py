@@ -76,31 +76,31 @@ jdtls-lsp -v callchain-up /path/to/project --query foo --format json 2> jdtls-ls
 **环境变量（日志）**
 
 
-| 变量                          | 说明                                                  |
-| --------------------------- | --------------------------------------------------- |
-| `JDTLS_LSP_LOG`             | `debug` / `info` / `warning` / `error`（未传 `-v` 时生效） |
-| `JDTLS_LSP_LOG_MAX_PAYLOAD` | 单条日志里 JSON 序列化最大字符数（默认约 12000）                      |
-| `JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT` | **`analyze documentSymbol`** 单次 `textDocument/documentSymbol` 等待秒数（默认 **600**；**设计导出中的 `symbols` 为轻量扫描，不经 LSP**） |
+| 变量                                  | 说明                                                                                                               |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `JDTLS_LSP_LOG`                     | `debug` / `info` / `warning` / `error`（未传 `-v` 时生效）                                                              |
+| `JDTLS_LSP_LOG_MAX_PAYLOAD`         | 单条日志里 JSON 序列化最大字符数（默认约 12000）                                                                                   |
+| `JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT` | `**analyze documentSymbol`** 单次 `textDocument/documentSymbol` 等待秒数（默认 **600**；**设计导出中的 `symbols` 为轻量扫描，不经 LSP**） |
 
 
 **子命令**
 
 
-| 子命令              | 作用                                                                             |
-| ---------------- | ------------------------------------------------------------------------------ |
-| `analyze`        | 单次 LSP 操作（符号、定义、引用、call hierarchy、**类型层次** 等）                                  |
-| `callchain-up`   | 从某方法出发 **向上** 追调用链（直到 REST / 消息监听 / 定时 / `@Async` / abstract / 无上游 / 环 / 深度上限） |
-| `callchain-down` | 从某方法出发 **向下** BFS 展开 `outgoingCalls` 子图（边表 + 节点上限）                             |
-| `entrypoints`    | **静态入口扫描**之一：`main`、Spring 启动、Servlet、消息监听、定时、`@Async` 等（无需 JDTLS）；**REST 映射**见 `reverse-design rest-map`（同属静态入口，见下文专节） |
-| `java-grep`      | 在 `*.java` 内**全文**搜索关键字（`rg` 优先，否则 Python；无需 JDTLS）                            |
-| `reverse-design` | 逆向设计编排：`scan` / `db-tables` / `symbols` / `bundle`；**`rest-map`（step2）属静态入口扫描**，与 `entrypoints` 并列（见下文 **[静态入口扫描（无需 JDTLS）](#静态入口扫描无需-jdtls)**） |
+| 子命令              | 作用                                                                                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `analyze`        | 单次 LSP 操作（符号、定义、引用、call hierarchy、**类型层次** 等）                                                                                                   |
+| `callchain-up`   | 从某方法出发 **向上** 追调用链（直到 REST / 消息监听 / 定时 / `@Async` / abstract / 无上游 / 环 / 深度上限）                                                                  |
+| `callchain-down` | 从某方法出发 **向下** BFS 展开 `outgoingCalls` 子图（边表 + 节点上限）                                                                                              |
+| `entrypoints`    | **静态入口扫描**之一：`main`、Spring 启动、Servlet、消息监听、定时、`@Async` 等（无需 JDTLS）；**REST 映射**见 `reverse-design rest-map`（同属静态入口，见下文专节）                         |
+| `java-grep`      | 在 `*.java` 内**全文**搜索关键字（`rg` 优先，否则 Python；无需 JDTLS）                                                                                             |
+| `reverse-design` | 逆向设计编排：`scan` / `db-tables` / `symbols` / `bundle`；`**rest-map`（step2）属静态入口扫描**，与 `entrypoints` 并列（见下文 **[静态入口扫描（无需 JDTLS）](#静态入口扫描无需-jdtls)**） |
 
 
-**静态入口扫描（无需 JDTLS）**（详见专节）：**`entrypoints`**（`main`/Spring/Servlet/消息/定时等）与 **`reverse-design rest-map`**（HTTP 映射 → `rest-map.json`）同属从源码静态发现外向边界，**均不启 JDTLS**；常与 **`callchain-up` / `callchain-down`** 联用。
+**静态入口扫描（无需 JDTLS）**（详见专节）：`**entrypoints`**（`main`/Spring/Servlet/消息/定时等）与 `**reverse-design rest-map**`（HTTP 映射 → `rest-map.json`）同属从源码静态发现外向边界，**均不启 JDTLS**；常与 `**callchain-up` / `callchain-down`** 联用。
 
 ### 调用链与静态分析边界（易「断链」）
 
-`callchain-up` / `callchain-down` 依赖 JDTLS 的 `**callHierarchy` + `incomingCalls` / `outgoingCalls`**，边来自 **编译期/IDE 调用图**，不是运行时。以下情形常见 **链不完整** 或 `**no_incoming`**（静态图里根本没有那条边）：
+`callchain-up` / `callchain-down` 依赖 JDTLS 的 `**callHierarchy` + `incomingCalls` / `outgoingCalls`**，边来自 编译期/IDE 调用图，不是运行时。以下情形常见 链不完整 或 `**no_incoming`**（静态图里根本没有那条边）：
 
 
 | 情形                                                                  | 为何断链                                                |
@@ -129,7 +129,7 @@ jdtls-lsp analyze <project> <operation> [选项]
 | operation         | 必需参数                          | 说明                                                                              |
 | ----------------- | ----------------------------- | ------------------------------------------------------------------------------- |
 | `documentSymbol`  | `--file`                      | 相对项目根或绝对路径的 `.java`                                                             |
-| `workspaceSymbol` | `--query`                     | 工作区符号搜索；支持 `**|**` 或 **全角 `｜`** 拼接多个子串，结果合并去重，最多 **20** 条                       |
+| `workspaceSymbol` | `--query`                     | 工作区符号搜索；支持 `**                                                                  |
 | `definition`      | `--file`、`--line`，可选 `--char` | 行号、列号均为 **1-based**（`--char` 默认 1）                                              |
 | `references`      | 同上                            | 同 `definition`                                                                  |
 | `hover`           | 同上                            | 同 `definition`                                                                  |
@@ -177,7 +177,8 @@ jdtls-lsp callchain-up <project> [入口三选一] [选项]
 ### 关键字 `--query` 如何解析
 
 1. **形如 `类名.方法名`**（仅一段、且**不含** `\|` / `｜`）
-  直接按「类 + 方法」解析，**不**依赖 workspace 索引。
+  直接按「类 + 方法」解析，**不**依赖 workspace 索引；但当点两侧都是全大写 SQL 标识符（如 `SCHEMA.TABLENAME`）时，会按普通关键字处理，不做类/方法拆分。
+  若要 100% 禁止拆分，请在点上使用转义：`schema\.tablename`（建议用单引号包住 `--query`，避免 shell 吃掉反斜杠）。
 2. **单段普通字符串**（如 `createOrder`、`monitor_data`）
   顺序尝试：  
   - `workspace/symbol`（多子串合并时各自去搜再合并去重）  
@@ -201,15 +202,15 @@ jdtls-lsp callchain-up <project> [入口三选一] [选项]
 ### 其他参数
 
 
-| 参数                        | 默认         | 说明                                                                                                                                                      |
-| ------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--max-depth`             | 20         | 向上追踪最大层数                                                                                                                                                |
-| `--format`                | `markdown` | `markdown`：**概要说明** + **调用起点入口（重点）**（与向下链叶节点同款 ``类.method(…)` `文件名:行``，再拼 **REST**、终止码；grep 多起点汇至同一顶层则 **链 2、3** 合并一行）+ ASCII 图 + 末尾 JSON；`json`：仅 JSON |
-| `--grep-workers`          | —          | 兼容保留；多入口串行追踪时**不**用于并行调度。可用环境变量 `JDTLS_LSP_GREP_WORKERS`（同上）                                                                                            |
-| `--grep-skip-interface`   | 关          | 仅 `java_text_grep`：跳过 interface 源文件中的命中                                                                                                                 |
-| `--grep-skip-rest-entry`  | 关          | 仅 `java_text_grep`：跳过起点已是 REST 的方法                                                                                                                      |
-| `--grep-max-entry-points` | —          | 仅 `java_text_grep`：最多 N 个起点（实现类优先排序后截断）                                                                                                                 |
-| `--jdtls`                 | 自动查找       | JDTLS 根目录                                                                                                                                               |
+| 参数                        | 默认         | 说明                                                                                                                                                    |
+| ------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--max-depth`             | 20         | 向上追踪最大层数                                                                                                                                              |
+| `--format`                | `markdown` | `markdown`：**查询** → **说明** → **统计** → **重点（边界入口）** → **各链（展开）** + 末尾 JSON；`json`：仅 JSON |
+| `--grep-workers`          | —          | 兼容保留；多入口串行追踪时**不**用于并行调度。可用环境变量 `JDTLS_LSP_GREP_WORKERS`（同上）                                                                                          |
+| `--grep-skip-interface`   | 关          | 仅 `java_text_grep`：跳过 interface 源文件中的命中                                                                                                               |
+| `--grep-skip-rest-entry`  | 关          | 仅 `java_text_grep`：跳过起点已是 REST 的方法                                                                                                                    |
+| `--grep-max-entry-points` | —          | 仅 `java_text_grep`：最多 N 个起点（实现类优先排序后截断）                                                                                                               |
+| `--jdtls`                 | 自动查找       | JDTLS 根目录                                                                                                                                             |
 
 
 ### 输出字段（JSON / Markdown 嵌入块）
@@ -275,6 +276,8 @@ jdtls-lsp callchain-up /path/to/project --class Foo --method bar --format json
 
 从某方法出发，沿 `**callHierarchy/outgoingCalls**` 做 **BFS**，展开**下游**有向子图（节点 + 边）。与 `callchain-up` 共用「类+方法 / 文件+行 / 关键字」入口，但**仅支持单起点**；**不**沿 `incomingCalls` 向上走。
 
+对在 **接口** 或 **abstract** 方法**声明**上的节点，`outgoingCalls` 往往为空（无方法体）。此时会自动调用 `**textDocument/implementation**` 找到实现类中的对应方法，再 `prepareCallHierarchy` 后继续向下扩展；合成边带 `syntheticImplementation: true`，`stats.implementationFallbackEdges` 为本次兜底边条数。
+
 ```text
 jdtls-lsp callchain-down <project> [入口三选一] [选项]
 ```
@@ -292,7 +295,8 @@ jdtls-lsp callchain-down <project> [入口三选一] [选项]
 ### 关键字 `--query` 与 `callchain-up` 的差异
 
 1. **单段 `类名.方法名`**（不含 `\|` / `｜`）
-  与 `callchain-up` 相同：直接按类+方法解析，**不**依赖 workspace 索引。
+  与 `callchain-up` 相同：直接按类+方法解析，**不**依赖 workspace 索引；但当点两侧都是全大写 SQL 标识符（如 `SCHEMA.TABLENAME`）时，会按普通关键字处理，不做类/方法拆分。
+  若要 100% 禁止拆分，请在点上使用转义：`schema\.tablename`（建议用单引号包住 `--query`，避免 shell 吃掉反斜杠）。
 2. **其余单段 / 多段**
   解析流程与 `callchain-up` 中「关键字解析」一致（`workspace/symbol`、类首方法、`java_text_grep` 等）。  
    **但若** 关键字最终对应 `**java_text_grep` 且跨多文件产生多起点**（内部标记 `javaGrepMultiFile`），`callchain-down` **会报错退出**，并提示改用 `--class`/`--method`、`--file`/`--line` 或更精确的单文件关键字。  
@@ -318,16 +322,17 @@ jdtls-lsp callchain-down <project> [入口三选一] [选项]
 ### 输出字段（JSON / Markdown 嵌入块）
 
 
-| 字段            | 含义                                                                                                                                          |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `query`       | 查询元数据（`mode`、`keyword`、`projectRoot`、`className`/`methodName` 等，与入口方式对应）                                                                    |
-| `direction`   | 固定为 `down`                                                                                                                                  |
-| `traversal`   | 固定为 `bfs`                                                                                                                                   |
-| `nodes`       | 字典：**键**为内部稳定键 ``file`:`line`:`character`:`method``，**值**为节点（`class`、`method`、`file`、`line`、`character`、`uri`、`isRest`、`isAbstractClass` 等） |
-| `edges`       | 数组：`{ "from": 键, "to": 键, "fromRanges": … }`，表示一条静态调用边                                                                                      |
-| `stats`       | `nodeCount`、`edgeCount`、`expandedCount`，以及本次使用的 `maxDepth` / `maxNodes` / `maxBranches` 配置快照                                                |
-| `stopReason`  | 终止原因，见下表                                                                                                                                    |
-| `jdtlsErrors` | 某次 `outgoingCalls` 失败时的锚点键与错误摘要（不阻断已收集子图输出）                                                                                                 |
+| 字段            | 含义                                                                                                                                        |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `query`       | 查询元数据（`mode`、`keyword`、`projectRoot`、`className`/`methodName` 等，与入口方式对应）                                                                  |
+| `direction`   | 固定为 `down`                                                                                                                                |
+| `traversal`   | 固定为 `bfs`                                                                                                                                 |
+| `nodes`       | 字典：**键**为内部稳定键 `file`:`line`:`character`:`method`，**值**为节点（`class`、`method`、`file`、`line`、`character`、`uri`、`isRest`、`isAbstractClass` 等） |
+| `startKey`    | 起点节点键（与 `nodes` 中键一致）；Markdown 中 **ASCII 树** 自该键展开                                                                 |
+| `edges`       | 数组：`{ "from": 键, "to": 键, "fromRanges": … }`，表示一条静态调用边；经实现类兜底时可有 `syntheticImplementation`                                                                                    |
+| `stats`       | `nodeCount`、`edgeCount`、`expandedCount`、`implementationFallbackEdges`（接口/abstract 上经 `implementation` 兜底的边数），以及本次使用的 `maxDepth` / `maxNodes` / `maxBranches` 配置快照                                              |
+| `stopReason`  | 终止原因，见下表                                                                                                                                  |
+| `jdtlsErrors` | 某次 `outgoingCalls` 失败时的锚点键与错误摘要（不阻断已收集子图输出）                                                                                               |
 
 
 `**stopReason`（向下）常见值**
@@ -342,7 +347,7 @@ jdtls-lsp callchain-down <project> [入口三选一] [选项]
 
 ### Markdown 与 JSON 的差异
 
-- `**--format markdown`（默认）**：含 **概要说明** 与 **下游终点分类**（数据库访问、中间件、第三方/HTTP 客户端等启发式）；简单 **get/set/is** 叶节点在正文里常**按文件汇总条数**，不逐条展开。**嵌入块中的 JSON** 与 `json` 模式同源。
+- `**--format markdown`（默认）**：**查询** → **说明** → **统计** → **重点（下游终点）** → **ASCII 树（展开）** →（可选）**JavaBean 合并**、**关键业务候选（step6）** → **边（前 200）**；简单 get/set/is 叶节点在正文里常按文件汇总。**嵌入块中的 JSON** 与 `json` 模式同源、节点完整。
 - `**--format json`**：`nodes` / `edges` **完整**，无删减。
 
 ### 示例
@@ -378,7 +383,7 @@ jdtls-lsp callchain-down /path/to/project --class Foo --method bar --max-branche
 
 ## 静态入口扫描（无需 JDTLS）
 
-**`entrypoints`** 负责非 HTTP 类入口；**REST 映射**见 **`reverse-design rest-map`**（[下一小节](#rest-映射reverse-design-rest-map)）。
+`**entrypoints**` 负责非 HTTP 类入口；**REST 映射**见 `**reverse-design rest-map`**（[下一小节](#rest-映射reverse-design-rest-map)）。
 
 ### `entrypoints`（非 HTTP 静态入口）
 
@@ -423,7 +428,7 @@ jdtls-lsp entrypoints /path/to/project --max-files 5000
 
 ### REST 映射（`reverse-design rest-map`）
 
-**静态入口扫描**的 HTTP 分支：启发式扫描 Spring MVC 映射（**非**完整 AST，与运行时路由可能不一致），输出 **`rest-map.json`**（端点列表、Controller 方法锚点）。**step2** 与设计导出 **`reverse-design bundle`** 中的 **`--skip-rest-map`** / **`graphs/rest-map.mmd`** 见下文 **[`reverse-design`](#reverse-design逆向设计导出step1step8)**。
+**静态入口扫描**的 HTTP 分支：启发式扫描 Spring MVC 映射（**非**完整 AST，与运行时路由可能不一致），输出 `**rest-map.json`**（端点列表、Controller 方法锚点）。**step2** 与设计导出 `**reverse-design bundle`** 中的 `**--skip-rest-map**` / `**graphs/rest-map.mmd**` 见下文 `**[reverse-design](#reverse-design逆向设计导出step1step8)**`。
 
 ```bash
 jdtls-lsp reverse-design rest-map /path/to/project --max-files 8000
@@ -438,7 +443,7 @@ jdtls-lsp reverse-design rest-map /path/to/project --max-files 8000
 
 | 参数               | 默认     | 说明                                                                                |
 | ---------------- | ------ | --------------------------------------------------------------------------------- |
-| `--query` / `-q` | （必填）   | 关键字；支持 `**|`** / **全角 `｜`** 多段                                                    |
+| `--query` / `-q` | （必填）   | 关键字；支持 `**                                                                        |
 | `--max-hits`     | `200`  | 返回条数上限                                                                            |
 | `--no-sort`      | 关      | 不按 `score_grep_hit` 启发式排序                                                         |
 | `--format`       | `json` | `json`：`needles`、`hits[]`（`file`、`line`、`text`、`score`）；`text`：每行 `path:line:行内容` |
@@ -453,22 +458,24 @@ jdtls-lsp java-grep /path/to/project -q 'foo|bar' --format text --max-hits 50
 
 ## `reverse-design`：逆向设计导出（step1–step8）
 
-与仓库根目录 **`需求.md`**、`docs/REVERSE_ENGINEERING_DESIGN.md` **§0** 对齐：先建立 **step1–3** 扫描产物，再可选 **step4–6** 调用链与业务摘要，**step7** 用 `analyze` / 单点 callchain / IDE 补全，**step8** 由 `bundle` 写 `index.md` 与 stdout 摘要。
+与仓库根目录 `**需求.md**`、`docs/REVERSE_ENGINEERING_DESIGN.md` **§0** 对齐：先建立 **step1–3** 扫描产物，再可选 **step4–6** 调用链与业务摘要，**step7** 用 `analyze` / 单点 callchain / IDE 补全，**step8** 由 `bundle` 写 `index.md` 与 stdout 摘要。
 
-**step2（`rest-map`）**在分类上归入 **[静态入口扫描（无需 JDTLS）](#静态入口扫描无需-jdtls)**（与 **`entrypoints`** 并列，均不启 JDTLS）；此处仍作为 `reverse-design` 子命令，便于与 **`bundle`** 产物目录一致。
+**step2（`rest-map`）**在分类上归入 **[静态入口扫描（无需 JDTLS）](#静态入口扫描无需-jdtls)**（与 `**entrypoints`** 并列，均不启 JDTLS）；此处仍作为 `reverse-design` 子命令，便于与 `**bundle**` 产物目录一致。
 
 **八步一览**
 
-| step | 目标 | 主要手段 / 产物 |
-| --- | --- | --- |
-| step1 | 工程概要 | `scan` → `modules.json`；`symbols` → `symbols-by-package.json` |
-| step2 | REST 清单（**静态入口**） | `rest-map` → `rest-map.json` |
-| step3 | 数据库表清单 | `db-tables` / bundle → `tables-manifest.json` |
-| step4 | 每入口向下调用链 | bundle `--entrypoint-callchain-down` → `data/callchain-down-entrypoints/<safe_entrypoint_file>/callchain-down-entrypoints-*.md`（文末含完整 JSON） |
-| step5 | 每表向上调用链 | bundle `--table-callchain-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`；`--queries` 为 **关键字向上（step5′）** |
-| step6 | 链上关键业务 | 向下链 JSON 内标权；`--business-summary` → `business.md` |
-| step7 | 补全实现细节 | **非 bundle 全自动**：`analyze`、`callchain-up` / `callchain-down`、IDE |
-| step8 | 汇总输出 | bundle 收尾：`index.md` + stdout JSON |
+
+| step  | 目标                | 主要手段 / 产物                                                                                                                                   |
+| ----- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| step1 | 工程概要              | `scan` → `modules.json`；`symbols` → `symbols-by-package.json`                                                                               |
+| step2 | REST 清单（**静态入口**） | `rest-map` → `rest-map.json`                                                                                                                |
+| step3 | 数据库表清单            | `db-tables` / bundle → `tables-manifest.json`                                                                                               |
+| step4 | 每入口向下调用链          | bundle `--entrypoint-callchain-down` → `data/callchain-down-entrypoints/<safe_entrypoint_file>/callchain-down-entrypoints-*.md`（文末含完整 JSON） |
+| step5 | 每表向上调用链           | bundle `--table-callchain-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`；`--queries` 为 **关键字向上（step5′）**                     |
+| step6 | 链上关键业务            | 向下链 JSON 内标权；`--business-summary` → `business.md`                                                                                           |
+| step7 | 补全实现细节            | **非 bundle 全自动**：`analyze`、`callchain-up` / `callchain-down`、IDE                                                                            |
+| step8 | 汇总输出              | bundle 收尾：`index.md` + stdout JSON                                                                                                          |
+
 
 子命令：
 
@@ -477,13 +484,13 @@ jdtls-lsp reverse-design { scan | rest-map | db-tables | symbols | bundle } ...
 ```
 
 
-| 子命令                           | step   | 依赖 JDTLS | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ----------------------------- | ---- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reverse-design scan <project>`       | step1 | 否        | 解析根目录 `pom.xml`（`modules` / `artifactId`）与 `settings.gradle*`（`include`），输出 JSON                                                                                                                                                                                                                                                                                                                                                                         |
-| `reverse-design rest-map <project>`   | step2 | 否        | **静态入口扫描**（HTTP）：启发式 `@GetMapping` / `@RequestMapping` 等（**非** AST；与运行时路由可能不完全一致）                                                                                                                                                                                                                                                                                                                                                                                       |
-| `reverse-design db-tables <project>`  | step3 | **否**    | **`tables-manifest` JSON**：`@Table`、含 SQL 语义的 **字符串字面量**（`FROM`/`JOIN`/`INTO`/`UPDATE`）、MyBatis **`table=`** 与 XML 内字面量 SQL；**`--tables-file`** / **`--tables`** 提供**规范表名**（`canonicalTables`、`unresolvedTables`、`extractedOnly`）                                                                                                                                                                                                                                                                        |
-| `reverse-design symbols <project>`    | step1 补充 | **否**    | **轻量扫描**（注释/字符串感知）匹配 glob 的 `*.java`，按 **package** 聚合顶层 `class` / `interface` / `enum` / `record`（无成员、无嵌套类型；大文件也秒级）                                                                                                                                                                                                                                                                                                                                                                                        |
-| `reverse-design bundle <project>`     | step8 编排 | 可选       | **一键**：默认 step1–3 + 可选 step4–6（**step4/step5/step5′ 在同一次 bundle 内共用一次 JDTLS**）+ 可选 **`--business-summary`**。输出 **`-o` / `--output`**（默认 `./design`）。详见 **[reverse-design bundle 详细说明](#reverse-design-bundle-详细说明)**。 |
+| 子命令                                  | step     | 依赖 JDTLS | 说明                                                                                                                                                                                                                                |
+| ------------------------------------ | -------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reverse-design scan <project>`      | step1    | 否        | 解析根目录 `pom.xml`（`modules` / `artifactId`）与 `settings.gradle*`（`include`），输出 JSON                                                                                                                                                  |
+| `reverse-design rest-map <project>`  | step2    | 否        | **静态入口扫描**（HTTP）：启发式 `@GetMapping` / `@RequestMapping` 等（**非** AST；与运行时路由可能不完全一致）                                                                                                                                                 |
+| `reverse-design db-tables <project>` | step3    | **否**    | `**tables-manifest` JSON**：`@Table`、含 SQL 语义的 **字符串字面量**（`FROM`/`JOIN`/`INTO`/`UPDATE`）、MyBatis `**table=`** 与 XML 内字面量 SQL；`**--tables-file**` / `**--tables**` 提供**规范表名**（`canonicalTables`、`unresolvedTables`、`extractedOnly`） |
+| `reverse-design symbols <project>`   | step1 补充 | **否**    | **轻量扫描**（注释/字符串感知）匹配 glob 的 `*.java`，按 **package** 聚合顶层 `class` / `interface` / `enum` / `record`（无成员、无嵌套类型；大文件也秒级）                                                                                                               |
+| `reverse-design bundle <project>`    | step8 编排 | 可选       | **一键**：默认 step1–3 + 可选 step4–6（**step4/step5/step5′ 在同一次 bundle 内共用一次 JDTLS**）+ 可选 `**--business-summary`**。输出 `**-o` / `--output**`（默认 `./design`）。详见 **[reverse-design bundle 详细说明](#reverse-design-bundle-详细说明)**。             |
 
 
 ```bash
@@ -523,7 +530,7 @@ jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --skip-callchai
 
 ### reverse-design bundle 详细说明
 
-**step8 编排**：在**项目根**上顺序执行 **step1–3**（含 **step1 补充** `symbols`）与可选 **step4–6**，最后写 **step8** `index.md` 与 stdout 摘要。**输出目录**默认 `./design/`。**目录层次**：根目录含 `index.md`（**step8**）、可选 `business.md`（**step6**）、汇总 JSON；**`data/`** 含 step1–3 扫描与各 callchain 明细；**`graphs/`** 含 **step2** Mermaid。**step4/step5/step5′** 在**未** `--skip-callchain` 且至少启用其一 时**共用一次 JDTLS**。**step6**：`--business-summary` 合并 `keyMethods` → `business.md`。**step7** 不在 bundle 内，见下文「耗时与日志」后 analyze 说明。
+**step8 编排**：在**项目根**上顺序执行 **step1–3**（含 **step1 补充** `symbols`）与可选 **step4–6**，最后写 **step8** `index.md` 与 stdout 摘要。**输出目录**默认 `./design/`。**目录层次**：根目录含 `index.md`（**step8**）、可选 `business.md`（**step6**）、汇总 JSON；`**data/`** 含 step1–3 扫描与各 callchain 明细；`**graphs/**` 含 **step2** Mermaid。**step4/step5/step5′** 在**未** `--skip-callchain` 且至少启用其一 时**共用一次 JDTLS**。**step6**：`--business-summary` 合并 `keyMethods` → `business.md`。**step7** 不在 bundle 内，见下文「耗时与日志」后 analyze 说明。
 
 **基本命令**：
 
@@ -559,63 +566,64 @@ design-out/
 3. **step3** `tables-manifest.json`（`--skip-table-manifest` 则跳过）
 4. **step1 补充** `symbols-by-package.json`（`--skip-symbols` 则跳过；**无 JDTLS**）
 5. **step5′ 关键字向上**：`--queries` 且**未** `--skip-callchain` → `data/callchain-up-*.md`
-6. **step5 按表向上**：`--table-callchain-up` 且**未** `--skip-callchain` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、根目录 **`table-callchain-summary.json`**；若再加 **`--table-callchain-up-extra`** → 同目录下另含 `*-sql-NN.md`、`*-mapper-NN.md`（上限见 `--max-table-up-extra-anchors`）
-7. **step4 entrypoints 向下**：`--entrypoint-callchain-down` 且**未** `--skip-callchain` → `data/callchain-down-entrypoints/<safe_entrypoint_file>/callchain-down-entrypoints-*.md`、**`entrypoint-callchain-down-summary.json`**。起点来自 `scan_java_entrypoints`（含 `@Controller`/`@RestController` 的 **public** 方法与其它典型入口行）。可用 **`--max-rest-down-endpoints N`** 限流
-
-   **JDTLS**：bundle 内 **step5′、step5、step4** 在至少启用其一且未 `--skip-callchain` 时 **共用一次 JVM**。单独执行 `jdtls-lsp callchain-up` / `callchain-down` 仍为**每次命令**各启 JDTLS（适合 **step7**）。
-8. **step6**：`--business-summary`（在 callchain 子步骤之后）：合并 `keyMethods` → **`business.md`**；可与 **`--skip-callchain`** 同用。摘要 JSON 含 **`businessSummary`**。
-9. **step8**：写 **`index.md`**（含八步对照表）+ **stdout JSON 摘要**
+6. **step5 按表向上**：`--table-callchain-up` 且**未** `--skip-callchain` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、根目录 `**table-callchain-summary.json`**；若再加 `**--table-callchain-up-extra**` → 同目录下另含 `*-sql-NN.md`、`*-mapper-NN.md`（上限见 `--max-table-up-extra-anchors`）
+7. **step4 entrypoints 向下**：`--entrypoint-callchain-down` 且**未** `--skip-callchain` → `data/callchain-down-entrypoints/<safe_entrypoint_file>/callchain-down-entrypoints-*.md`、`**entrypoint-callchain-down-summary.json`**。起点来自 `scan_java_entrypoints`（含 `@Controller`/`@RestController` 的 **public** 方法与其它典型入口行）。可用 `**--max-rest-down-endpoints N`** 限流
+  **JDTLS**：bundle 内 **step5′、step5、step4** 在至少启用其一且未 `--skip-callchain` 时 **共用一次 JVM**。单独执行 `jdtls-lsp callchain-up` / `callchain-down` 仍为**每次命令**各启 JDTLS（适合 **step7**）。
+8. **step6**：`--business-summary`（在 callchain 子步骤之后）：合并 `keyMethods` → `**business.md`**；可与 `**--skip-callchain**` 同用。摘要 JSON 含 `**businessSummary**`。
+9. **step8**：写 `**index.md`**（含八步对照表）+ **stdout JSON 摘要**
 
 **CLI 参数一览**：
 
-| 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `project` | （位置参数） | 项目根目录 |
-| `-o` / `--output` | `./design` | 输出根目录；会创建 `data/`、`graphs/` |
-| `--skip-scan` | 关 | 不生成 `modules.json` |
-| `--skip-rest-map` | 关 | 不生成 `rest-map.json` 与 `graphs/rest-map.mmd` |
-| `--skip-table-manifest` | 关 | 不生成 `tables-manifest.json` |
-| `--skip-symbols` | 关 | 不生成 `symbols-by-package.json` |
-| `--skip-callchain` | 关 | **关闭所有**需 JDTLS 的调用链：`--queries`、`--table-callchain-up`、**`--entrypoint-callchain-down`** |
-| `--queries` | 空 | 逗号分隔关键字；每个关键字输出一个 `data/callchain-up-*.md`（Markdown，文末嵌入 JSON）；与 `callchain-up` 子命令的关键字规则一致 |
-| `--table-callchain-up` | 关 | 按表自动向上调用链；依赖 `tables-manifest` 中的蛇形表名；与 `--skip-callchain` 同时指定则跳过 |
-| `--table-callchain-up-extra` | 关 | **须与** `--table-callchain-up` **同用**：额外对 manifest 中 JDBC 字符串 SQL（`*.java`）与 MyBatis XML→Mapper 方法跑 callchain-up（`*-sql-NN.md`、`*-mapper-NN.md`） |
-| `--max-table-up-extra-anchors` | `24` | 与上一项联用：每张表 **SQL 与 MyBatis 各自**最多几条起点；`0` 表示不限制 |
-| `--max-table-callchain-scan` | `12000` | 为每张表在仓库内最多检查多少个 `*ServiceImpl.java` 路径以查找 `EntityRepository` 注入 |
-| `--entrypoint-callchain-down` | 关 | 对 `scan_java_entrypoints` 的每个起点跑 `callchain-down`；与 `--skip-callchain` 同时指定则跳过 |
-| `--max-rest-down-endpoints` | `0` | 只处理前 N 个 entrypoint（`scan_java_entrypoints` 返回顺序）；`0` 表示**不限制**（起点多时耗时会很长） |
-| `--rest-down-depth` | `16` | 向下 BFS 最大深度（同 `callchain-down --max-depth`） |
-| `--rest-down-max-nodes` | `500` | 向下子图节点上限（同 `callchain-down --max-nodes`） |
-| `--rest-down-max-branches` | `48` | 每层 outgoing 分支上限（同 `callchain-down --max-branches`） |
-| `--business-summary` | 关 | **step6**：递归合并向下链报告（`callchain-down-rest-*` / `callchain-down-entrypoints-*` 的 `.md`/`.json`，及历史上 `data/` 根下同名扁平文件）的 `keyMethods` → 根目录 `business.md`。可与 **`--skip-callchain`** 同用（只扫描已有报告；无 `keyMethods` 时会现场补算）。**不依赖**本轮是否 `--entrypoint-callchain-down`，但无匹配文件时 `mergedCount` 为 0 |
-| `--tables-file` | 无 | 每行一个规范表名（`#` 注释）；与 `reverse-design db-tables` 相同语义，用于 `canonicalTables` / `unresolvedTables` |
-| `--tables` | 空 | 逗号分隔表名，与 `--tables-file` 合并 |
-| `--strict-tables-only` | 关 | `tables-manifest.json` 中不列出 `extractedOnly`（仍参与抽取与锚点） |
-| `--max-table-java-files` | `8000` | **step3**（tables-manifest）最多扫描的 `.java` 数 |
-| `--max-table-xml-files` | `2000` | **step3** 最多扫描的 `.xml` 数（MyBatis 等） |
-| `--glob` | `**/src/main/java/**/*.java` | **step1 补充** 轻量扫描的 glob（相对项目根） |
-| `--max-symbol-files` | `200` | **step1 补充** 最多处理的 `.java` 文件数 |
-| `--max-rest-files` | `8000` | **step2** REST 扫描最多 `.java` 文件数 |
-| `--callchain-depth` | `20` | `callchain-up` 最大向上深度（`--queries` 与 `--table-callchain-up` 共用） |
-| `--jdtls` | 环境/默认路径 | JDTLS 安装目录 |
-| `--quiet` | 关 | TTY 下也不自动升到 INFO 日志；适合脚本只收 stdout JSON |
 
-**`--skip-table-manifest` 与 `--table-callchain-up`**：
+| 参数                             | 默认                           | 说明                                                                                                                                                                                                                                                                                    |
+| ------------------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `project`                      | （位置参数）                       | 项目根目录                                                                                                                                                                                                                                                                                 |
+| `-o` / `--output`              | `./design`                   | 输出根目录；会创建 `data/`、`graphs/`                                                                                                                                                                                                                                                           |
+| `--skip-scan`                  | 关                            | 不生成 `modules.json`                                                                                                                                                                                                                                                                    |
+| `--skip-rest-map`              | 关                            | 不生成 `rest-map.json` 与 `graphs/rest-map.mmd`                                                                                                                                                                                                                                           |
+| `--skip-table-manifest`        | 关                            | 不生成 `tables-manifest.json`                                                                                                                                                                                                                                                            |
+| `--skip-symbols`               | 关                            | 不生成 `symbols-by-package.json`                                                                                                                                                                                                                                                         |
+| `--skip-callchain`             | 关                            | **关闭所有**需 JDTLS 的调用链：`--queries`、`--table-callchain-up`、`**--entrypoint-callchain-down`**                                                                                                                                                                                             |
+| `--queries`                    | 空                            | 逗号分隔关键字；每个关键字输出一个 `data/callchain-up-*.md`（Markdown，文末嵌入 JSON）；与 `callchain-up` 子命令的关键字规则一致                                                                                                                                                                                           |
+| `--table-callchain-up`         | 关                            | 按表自动向上调用链；依赖 `tables-manifest` 中的蛇形表名；与 `--skip-callchain` 同时指定则跳过                                                                                                                                                                                                                    |
+| `--table-callchain-up-extra`   | 关                            | **须与** `--table-callchain-up` **同用**：额外对 manifest 中 JDBC 字符串 SQL（`*.java`）与 MyBatis XML→Mapper 方法跑 callchain-up（`*-sql-NN.md`、`*-mapper-NN.md`）                                                                                                                                       |
+| `--max-table-up-extra-anchors` | `24`                         | 与上一项联用：每张表 **SQL 与 MyBatis 各自**最多几条起点；`0` 表示不限制                                                                                                                                                                                                                                       |
+| `--max-table-callchain-scan`   | `12000`                      | 为每张表在仓库内最多检查多少个 `*ServiceImpl.java` 路径以查找 `EntityRepository` 注入                                                                                                                                                                                                                       |
+| `--entrypoint-callchain-down`  | 关                            | 对 `scan_java_entrypoints` 的每个起点跑 `callchain-down`；与 `--skip-callchain` 同时指定则跳过                                                                                                                                                                                                        |
+| `--max-rest-down-endpoints`    | `0`                          | 只处理前 N 个 entrypoint（`scan_java_entrypoints` 返回顺序）；`0` 表示**不限制**（起点多时耗时会很长）                                                                                                                                                                                                            |
+| `--rest-down-depth`            | `16`                         | 向下 BFS 最大深度（同 `callchain-down --max-depth`）                                                                                                                                                                                                                                           |
+| `--rest-down-max-nodes`        | `500`                        | 向下子图节点上限（同 `callchain-down --max-nodes`）                                                                                                                                                                                                                                              |
+| `--rest-down-max-branches`     | `48`                         | 每层 outgoing 分支上限（同 `callchain-down --max-branches`）                                                                                                                                                                                                                                   |
+| `--business-summary`           | 关                            | **step6**：递归合并向下链报告（`callchain-down-rest-*` / `callchain-down-entrypoints-*` 的 `.md`/`.json`，及历史上 `data/` 根下同名扁平文件）的 `keyMethods` → 根目录 `business.md`。可与 `**--skip-callchain`** 同用（只扫描已有报告；无 `keyMethods` 时会现场补算）。**不依赖**本轮是否 `--entrypoint-callchain-down`，但无匹配文件时 `mergedCount` 为 0 |
+| `--tables-file`                | 无                            | 每行一个规范表名（`#` 注释）；与 `reverse-design db-tables` 相同语义，用于 `canonicalTables` / `unresolvedTables`                                                                                                                                                                                          |
+| `--tables`                     | 空                            | 逗号分隔表名，与 `--tables-file` 合并                                                                                                                                                                                                                                                           |
+| `--strict-tables-only`         | 关                            | `tables-manifest.json` 中不列出 `extractedOnly`（仍参与抽取与锚点）                                                                                                                                                                                                                                 |
+| `--max-table-java-files`       | `8000`                       | **step3**（tables-manifest）最多扫描的 `.java` 数                                                                                                                                                                                                                                             |
+| `--max-table-xml-files`        | `2000`                       | **step3** 最多扫描的 `.xml` 数（MyBatis 等）                                                                                                                                                                                                                                                   |
+| `--glob`                       | `**/src/main/java/**/*.java` | **step1 补充** 轻量扫描的 glob（相对项目根）                                                                                                                                                                                                                                                        |
+| `--max-symbol-files`           | `200`                        | **step1 补充** 最多处理的 `.java` 文件数                                                                                                                                                                                                                                                        |
+| `--max-rest-files`             | `8000`                       | **step2** REST 扫描最多 `.java` 文件数                                                                                                                                                                                                                                                       |
+| `--callchain-depth`            | `20`                         | `callchain-up` 最大向上深度（`--queries` 与 `--table-callchain-up` 共用）                                                                                                                                                                                                                        |
+| `--jdtls`                      | 环境/默认路径                      | JDTLS 安装目录                                                                                                                                                                                                                                                                            |
+| `--quiet`                      | 关                            | TTY 下也不自动升到 INFO 日志；适合脚本只收 stdout JSON                                                                                                                                                                                                                                                |
+
+
+`**--skip-table-manifest` 与 `--table-callchain-up`**：
 
 - 若**未** skip manifest：本次运行会生成 `data/tables-manifest.json`，并按其跑按表链。
 - 若 **skip** manifest：不会重写 `tables-manifest.json`；此时若输出目录里**已有** `data/tables-manifest.json`（例如上次 bundle 产物），仍会读取并跑 `--table-callchain-up`；若不存在该文件，则跳过按表链并在 `warnings` 中说明。
 
-**`--skip-rest-map` 与 `--entrypoint-callchain-down`**：
+`**--skip-rest-map` 与 `--entrypoint-callchain-down`**：
 
 - **当两者都未启用**：会生成 `data/rest-map.json` + `graphs/rest-map.mmd`。
 - **当启用 `--entrypoint-callchain-down`**：step4 **不依赖** `rest-map`，因此 bundle **跳过生成** `rest-map.json` / `graphs/rest-map.mmd`（避免额外静态扫描）；若仍需要 `rest-map.json`，请**不要**加 `--entrypoint-callchain-down`，或另外跑 `reverse-design rest-map`。
 - **当启用 `--skip-rest-map`**：不会重写 `rest-map.json`；若输出目录里**已有** `data/rest-map.json`，仍保留给阅读/手工锚点使用。
 
-**`--business-summary`（step6）**：
+`**--business-summary`（step6）**：
 
-- 依赖 **`data/callchain-down-entrypoints/.../callchain-down-entrypoints-*.md`** 或历史 **`data/callchain-down-rest/...`**（或遗留扁平 `.md`/`.json`）：通常与 **`--entrypoint-callchain-down`** 同次或前次 bundle 产物配合使用。
+- 依赖 `**data/callchain-down-entrypoints/.../callchain-down-entrypoints-*.md`** 或历史 `**data/callchain-down-rest/...**`（或遗留扁平 `.md`/`.json`）：通常与 `**--entrypoint-callchain-down**` 同次或前次 bundle 产物配合使用。
 - **独立使用**：`--skip-callchain --business-summary` 仅根据输出目录里**已有**的向下链 JSON 生成/覆盖 `business.md`，适合 CI 分步或只刷新聚合视图。
-- 单条 `callchain-down` JSON 内已含节点级 **`businessScore` / `businessCandidate` / `businessSignals`** 与顶层 **`keyMethods`**（**不含** `javadoc` 字段；顶层 **`businessPhase`** 为 **`step6`**）。生成 **`business.md`** 时由 **`jdtls_lsp.java_javadoc.extract_javadoc_above_method`** 按 `file`+`line` 从源码解析 Javadoc。
+- 单条 `callchain-down` JSON 内已含节点级 `**businessScore` / `businessCandidate` / `businessSignals`** 与顶层 `**keyMethods**`（**不含** `javadoc` 字段；顶层 `**businessPhase`** 为 `**step6**`）。生成 `**business.md**` 时由 `**jdtls_lsp.java_javadoc.extract_javadoc_above_method**` 按 `file`+`line` 从源码解析 Javadoc。
 
 **stdout 摘要 JSON**（成功时）常见字段：
 
@@ -630,7 +638,7 @@ design-out/
 **耗时与日志**：
 
 - **快**：**step1–3** 与 **step1 补充**（`symbols`）均为本地扫描（轻量实现，一般秒级～分钟级，视仓库大小与 `--max-symbol-files`）。
-- **慢**：在 **bundle** 中 **step5′/5/4** **共用一次 JDTLS**；单次 `callchain-up`/`down` 命令仍为每次各启 JVM（**step7**）。向下链在起点多时仍可能较慢，可配合 **`--max-rest-down-endpoints`** 试跑。
+- **慢**：在 **bundle** 中 **step5′/5/4** **共用一次 JDTLS**；单次 `callchain-up`/`down` 命令仍为每次各启 JVM（**step7**）。向下链在起点多时仍可能较慢，可配合 `**--max-rest-down-endpoints`** 试跑。
 - 在终端直接运行时，若未 `--quiet` 且未手动设日志级别，bundle 会将日志提到 **INFO**，避免「无输出像卡住」；需要完整 JSON 可重定向 stdout，进度看 stderr。
 
 **示例**：
@@ -661,7 +669,7 @@ jdtls-lsp reverse-design bundle /path/to/project -o ./design --skip-symbols --en
 jdtls-lsp reverse-design bundle /path/to/project -o ./design-out --quiet > bundle-summary.json
 ```
 
-**排查「卡住」**：**step1 补充**（`symbols`）已为轻量扫描，一般很快。bundle 若慢，多在 **step4/step5/step5′**（多关键字、多表、多 entrypoint 起点 → 大量 LSP 往返；**同次 bundle 内通常只启一次 JDTLS**）。**step7** 单独执行 **`callchain-up` / `callchain-down`** 仍为每次各启 JVM。单文件 **`analyze … documentSymbol`** 仍可能极慢，见 **`JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT`**。若 **LSP 管道僵死**（旧版 `jrpc` 写锁）：升级已修复版本。
+**排查「卡住」**：**step1 补充**（`symbols`）已为轻量扫描，一般很快。bundle 若慢，多在 **step4/step5/step5′**（多关键字、多表、多 entrypoint 起点 → 大量 LSP 往返；**同次 bundle 内通常只启一次 JDTLS**）。**step7** 单独执行 `**callchain-up` / `callchain-down`** 仍为每次各启 JVM。单文件 `**analyze … documentSymbol**` 仍可能极慢，见 `**JDTLS_LSP_DOCUMENT_SYMBOL_TIMEOUT**`。若 **LSP 管道僵死**（旧版 `jrpc` 写锁）：升级已修复版本。
 
 **库 API**：`jdtls_lsp.reverse_design.run_design_bundle`（**step8 编排**）、`scan_modules`（`reverse_design.scan_modules`，**step1**）、`jdtls_lsp.entry_scan.scan_rest_map`（**step2**，亦可从 `jdtls_lsp.reverse_design` 再导出）、`build_table_manifest`（**step3**）、`batch_symbols_by_package`（`reverse_design.batch_symbols_by_package`，**step1 补充**）、`run_table_callchain_up` / `resolve_service_anchor_for_table`（**step5**，对应 `--table-callchain-up`）、`run_entrypoint_callchain_down`（**step4**，对应 `--entrypoint-callchain-down`）；**step6** 亦可 `jdtls_lsp.business_summary`（与 `reverse_design` 平级，对应 `--business-summary`）内 `merge_key_methods_from_downchain_files`、`format_business_md`、`annotate_downchain_business`，以及 `jdtls_lsp.java_javadoc.extract_javadoc_above_method`（`business.md` 与链顶入口共用）。静态入口另见 `jdtls_lsp.entry_scan.scan_java_entrypoints`（或子模块 `entry_scan.java_entrypoints`）。
 
@@ -724,7 +732,7 @@ text = trace_call_chain_sync(
 print(text)
 ```
 
-调用链包装在 **`jdtls_lsp.callchain`** 包：`trace`（`trace_call_chain_sync` / `trace_outgoing_subgraph_sync`）与 `format`（`format_callchain_markdown`、`format_downchain_markdown`、`extract_trace_payload_dict`、`summarize_trace_*_json`）。原子能力为 **`analyze`**（LSP）与 **`java_grep`** 等。**逆向 design bundle**（step4–5）默认落盘 **Markdown**，文末 **「原始 JSON」** 代码块内为完整 payload。
+调用链包装在 `**jdtls_lsp.callchain**` 包：`trace`（`trace_call_chain_sync` / `trace_outgoing_subgraph_sync`）与 `format`（`format_callchain_markdown`、`format_downchain_markdown`、`extract_trace_payload_dict`、`summarize_trace_*_json`）。原子能力为 `**analyze**`（LSP）与 `**java_grep**` 等。**逆向 design bundle**（step4–5）默认落盘 **Markdown**，文末 **「原始 JSON」** 代码块内为完整 payload。
 
 ### `java_grep_report`
 
@@ -788,7 +796,7 @@ setup_logging("INFO")  # 或 "DEBUG"，或环境变量 JDTLS_LSP_LOG
 
 ### Agent skills（仓库内）
 
-本仓库 **`skills/`** 下 Cursor/LiteClaw 技能说明应与上文 CLI、子命令、`jdtls_lsp.callchain` / `business_summary` 等 **保持一致**；若行为以代码为准，发现漂移时请以 **本文 + `--help`** 为准并更新对应 `skills/*/SKILL.md`。
+本仓库 `**skills/**` 下 Cursor/LiteClaw 技能说明应与上文 CLI、子命令、`jdtls_lsp.callchain` / `business_summary` 等 **保持一致**；若行为以代码为准，发现漂移时请以 **本文 + `--help`** 为准并更新对应 `skills/*/SKILL.md`。
 
 ---
 
@@ -831,15 +839,17 @@ PYTHONPATH=src python3 -m jdtls_lsp analyze --help
 
 ### `reverse-design bundle` / LSP 子命令卡住后按 Ctrl+C 的堆栈（排查参考）
 
-典型现象：卡在 **`callchain-up`**、**`analyze`** 等仍使用 JDTLS 的路径；第一次 **Ctrl+C** 常在 **`jrpc.py` → `queue.Queue.get`**（等某次 LSP 响应），`finally` 里 **`client.shutdown()`** 若仍僵死，**`shutdown`** 也会在 **`q.get`** 上等待，可能需 **第二次 Ctrl+C**。
+典型现象：卡在 `**callchain-up`**、`**analyze**` 等仍使用 JDTLS 的路径；第一次 **Ctrl+C** 常在 `**jrpc.py` → `queue.Queue.get`**（等某次 LSP 响应），`finally` 里 `**client.shutdown()**` 若仍僵死，`**shutdown**` 也会在 `**q.get**` 上等待，可能需 **第二次 Ctrl+C**。
 
-| 栈位置 | 说明 |
-|--------|------|
-| `callchain/trace.py` / `analyze.py` → `client.request(...)` | 等当前 LSP 请求结果 |
-| `jrpc.py` → `q.get(timeout=...)` | 等 JSON-RPC 响应 |
-| `client.shutdown` → `send_request("shutdown")` | 优雅关闭 JVM |
 
-**处理**：升级已修复 **`jrpc` 写锁** 的版本；**`symbols`（step1 补充）无 JDTLS**，若仅导出 `symbols-by-package.json` 可单独跑 **`reverse-design symbols`** 验证。**JVM shutdown** 时若遇 KeyboardInterrupt 会记日志并 **terminate/kill** JVM。
+| 栈位置                                                         | 说明            |
+| ----------------------------------------------------------- | ------------- |
+| `callchain/trace.py` / `analyze.py` → `client.request(...)` | 等当前 LSP 请求结果  |
+| `jrpc.py` → `q.get(timeout=...)`                            | 等 JSON-RPC 响应 |
+| `client.shutdown` → `send_request("shutdown")`              | 优雅关闭 JVM      |
+
+
+**处理**：升级已修复 `**jrpc` 写锁** 的版本；`**symbols`（step1 补充）无 JDTLS**，若仅导出 `symbols-by-package.json` 可单独跑 `**reverse-design symbols`** 验证。**JVM shutdown** 时若遇 KeyboardInterrupt 会记日志并 **terminate/kill** JVM。
 
 ---
 

@@ -183,6 +183,11 @@ def main(argv: list[str] | None = None) -> int:
         help="关键字 grep：最多 N 个起点（同 callchain-up）",
     )
     dp.add_argument(
+        "--merge-bean-get-set",
+        action="store_true",
+        help="合并 simple JavaBean get/set/is 叶节点：删除折叠后的 accessor 节点，并在调用者节点标注 set/get 列表",
+    )
+    dp.add_argument(
         "--format",
         dest="output_format",
         choices=("json", "markdown"),
@@ -468,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
             grep_skip_interface=args.grep_skip_interface,
             grep_skip_rest=args.grep_skip_rest_entry,
             grep_max_entry_points=args.grep_max_entry_points,
+            merge_bean_get_set=bool(getattr(args, "merge_bean_get_set", False)),
         )
     elif args.cmd == "entrypoints":
         root = Path(args.project).resolve()

@@ -12,7 +12,10 @@ from jdtls_lsp.business_summary import (
 )
 from jdtls_lsp.java_javadoc import extract_javadoc_above_method
 from jdtls_lsp.reverse_design.bundle import run_design_bundle
-from jdtls_lsp.reverse_design.entrypoint_callchain_down import run_entrypoint_callchain_down
+from jdtls_lsp.reverse_design.entrypoint_callchain_down import (
+    run_entrypoint_callchain_down,
+    run_rest_callchain_down,
+)
 from jdtls_lsp.entry_scan import scan_rest_map
 from jdtls_lsp.reverse_design.batch_symbols_by_package import batch_symbols_by_package
 from jdtls_lsp.reverse_design.scan_modules import scan_modules
@@ -37,6 +40,7 @@ __all__ = [
     "resolve_service_anchor_for_table",
     "run_design_bundle",
     "run_entrypoint_callchain_down",
+    "run_rest_callchain_down",
     "run_table_callchain_up",
     "scan_modules",
     "scan_rest_map",

@@ -77,6 +77,80 @@ def _ascii_tree_for_chain(nodes: list[dict[str, Any]]) -> str:
         )
     return "\n".join(lines)
 
+
+def _ascii_line_downchain_node(node: dict[str, Any]) -> str:
+    """单行：`Class.method(…)  # File.java:line`（与向下 ASCII 图示例一致）。"""
+    c = _short_class_name(str(node.get("class", "?")))
+    m = _compact_method_signature(str(node.get("method", "")))
+    loc = _short_file_loc(str(node.get("file", "")), node.get("line"))
+    return f"{c}.{m}  # {loc}"
+
+
+def _ascii_tree_for_downchain_graph(
+    start_key: str | None,
+    nodes: dict[str, Any],
+    edges: list[Any],
+) -> str:
+    """
+    自起点沿 **出边** 展开为 ASCII 树（多子节点用 ``├──``/``└──``；与单链 ``_ascii_tree_for_chain`` 的缩进风格一致）。
+    """
+    if not isinstance(nodes, dict) or not nodes:
+        return "(空图)"
+
+    adj: dict[str, list[str]] = defaultdict(list)
+    for e in edges:
+        if isinstance(e, dict):
+            a, b = e.get("from"), e.get("to")
+            if isinstance(a, str) and isinstance(b, str) and b in nodes:
+                adj[a].append(b)
+    for k in adj:
+        adj[k] = sorted(set(adj[k]))
+
+    sk: str | None = start_key if isinstance(start_key, str) and start_key in nodes else None
+    if sk is None:
+        incoming: dict[str, int] = defaultdict(int)
+        for e in edges:
+            if isinstance(e, dict) and isinstance(e.get("to"), str):
+                incoming[e["to"]] += 1
+        roots = [k for k in nodes if incoming.get(k, 0) == 0]
+        if len(roots) == 1:
+            sk = roots[0]
+        elif len(roots) > 1:
+            sk = sorted(roots)[0]
+        else:
+            sk = sorted(nodes.keys())[0]
+
+    def walk(key: str, prefix: str, is_last: bool, is_root: bool, stack: list[str]) -> list[str]:
+        if key in stack:
+            n = nodes.get(key)
+            lbl = _ascii_line_downchain_node(n) if isinstance(n, dict) else str(key)
+            branch = "└── " if is_last else "├── "
+            if is_root:
+                return [f"{lbl}  (cycle)"]
+            return [f"{prefix}{branch}{lbl}  (cycle)"]
+
+        n = nodes.get(key)
+        if not isinstance(n, dict):
+            return [f"{prefix}(missing node `{key}`)"]
+
+        text = _ascii_line_downchain_node(n)
+        if is_root:
+            out = [text]
+            child_prefix = "    "
+        else:
+            branch = "└── " if is_last else "├── "
+            out = [f"{prefix}{branch}{text}"]
+            child_prefix = prefix + ("    " if is_last else "│   ")
+
+        chs = adj.get(key, [])
+        stack_next = stack + [key]
+        for i, ck in enumerate(chs):
+            out.extend(walk(ck, child_prefix, i == len(chs) - 1, False, stack_next))
+        return out
+
+    return "\n".join(walk(sk, "", True, True, []))
+
+
 def _short_node_line(node: dict[str, Any]) -> str:
     """单行可读：类.方法 — 文件:行。"""
     c = str(node.get("class", "?"))
@@ -118,7 +192,7 @@ def _md_numbered_compact_only(index: int, node: dict[str, Any]) -> str:
 
 
 def _md_up_chain_entry_line(seq: int, chain_nums_s: str, body_after_emdash: str) -> str:
-    """向上「调用起点入口」：`1. **链 1、2** — …`；body 内仍以 `_short_node_line_compact` 开头以保持与向下一致。"""
+    """向上「重点（边界入口）」汇总行：`1. **链 1、2** — …`；body 内仍以 `_short_node_line_compact` 开头以保持与向下一致。"""
     return f"{seq}. **链 {chain_nums_s}** — {body_after_emdash}"
 
 
@@ -188,7 +262,7 @@ def _up_entry_merge_key_and_suffix(
 
 
 def _markdown_up_entry_sections(chains: list[Any]) -> list[str]:
-    """向上链：每条链一行；根（链号）+ 与向下链相同的紧凑方法行 + REST + 终止码；grep 多起点合并规则不变。"""
+    """向上链「重点（边界入口）」汇总行：每条链一行；紧凑方法行 + REST + 终止码；grep 多起点合并规则不变。"""
     rows: list[dict[str, Any]] = []
     for idx, ch in enumerate(chains):
         if not isinstance(ch, dict):
@@ -443,7 +517,7 @@ def apply_manifest_anchor_to_callchain_markdown(raw: str, manifest_anchor: dict[
 
 def format_callchain_markdown(payload: dict[str, Any]) -> str:
     """
-    将 callchain-up 的 JSON 结构体转为 Markdown：含流程说明、ASCII 图示与嵌入的 JSON 代码块。
+    将 callchain-up 的 JSON 结构体转为 Markdown：查询、说明、统计、重点（边界入口）、各链展开、文末嵌入 JSON。
     """
     q = payload.get("query") if isinstance(payload.get("query"), dict) else {}
     project = str(q.get("projectRoot", ""))
@@ -536,27 +610,20 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
         "",
         *query_lines,
         "",
-        "## 流程概览",
+        "## 说明",
         "",
-        "```",
-        "起点方法（实现层）",
-        "    └── LSP callHierarchy/incomingCalls 向上取直接调用方",
-        "            └── 重复直至 REST / 消息监听 / 定时任务 / @Async / abstract / 无上游 / 环 / max_depth",
-        "```",
+        "自起点沿 LSP **`callHierarchy/incomingCalls`** 向上追踪，直到 REST、消息监听、`@Scheduled`、`@Async`、abstract、无上游、检测到环或达到 `max_depth`（监听/调度/异步/REST 由注解与签名启发式识别）。",
         "",
-        "## 概要说明",
-        "",
-        "本报告为 **向上** 调用链：从起点方法沿 LSP **incomingCalls** 向上追踪，直至 REST、**消息队列消费者**、**定时任务**、**`@Async` 异步方法**（均由方法上方窗口内注解/签名启发式识别）、abstract、无上游、环或深度上限。",
-        "**阅读重点**：下一节「调用起点入口」汇总每条链在系统边界上的 **最上游入口**（常见为 HTTP/REST；亦可能为消息监听、`@Scheduled`、**`@Async`**；否则为无上游时的顶层方法）。",
+        "## 统计",
         "",
         f"- **链数**: {count}",
-        "- **追踪方向**: 自内向外（被调方法 → 调用者 → …）",
+        "- **方向**: 被调方法 → 调用者 → …",
         "",
-        "## 调用起点入口（重点）",
+        "## 重点（边界入口）",
         "",
         entry_md,
         "",
-        "## 调用链图示",
+        "## 各链（展开）",
         "",
     ]
 
@@ -569,8 +636,11 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
         if not isinstance(nodes, list):
             nodes = []
         gsf = ch.get("grepSourceFile")
-        gtitle = f" · grep起点 `{gsf}:{ch.get('grepSourceLine', '')}`" if gsf else ""
-        lines.append(f"### {idx + 1}. 链 {idx + 1}（终止: {label}{gtitle}）")
+        gsl = ch.get("grepSourceLine", "")
+        gtitle = f" · grep `{gsf}:{gsl}`" if gsf else ""
+        lines.append(f"### 链 {idx + 1}")
+        lines.append("")
+        lines.append(f"**终止** `{sr}`（{label}）{gtitle}")
         lines.append("")
         lines.append("```")
         lines.append(_ascii_tree_for_chain([x for x in nodes if isinstance(x, dict)]))
@@ -579,7 +649,7 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
         top: dict[str, Any] = nodes[-1] if nodes and isinstance(nodes[-1], dict) else {}
         je = ch.get("jdtlsError")
         if isinstance(je, str) and je.strip() and sr == "jdtls_error":
-            lines.append("#### JDTLS 错误（incomingCalls）")
+            lines.append("**JDTLS 错误**（incomingCalls，链到此为止）：")
             lines.append("")
             lines.append(f"```\n{je.strip()[:900]}\n```")
             lines.append("")
@@ -597,37 +667,25 @@ def format_callchain_markdown(payload: dict[str, Any]) -> str:
                 or te.get("javadoc")
             )
             if isinstance(lm, list) and lm:
-                lines.append("#### 该链 消息/队列（补充）")
-                lines.append("")
-                lines.append(f"1. **监听**: `{', '.join(str(x) for x in lm)}`")
+                lines.append(f"- **监听**: `{', '.join(str(x) for x in lm)}`")
                 lines.append("")
             elif isinstance(sm, list) and sm:
-                lines.append("#### 该链 定时任务（补充）")
-                lines.append("")
-                lines.append(f"1. **调度**: `{', '.join(str(x) for x in sm)}`")
+                lines.append(f"- **调度**: `{', '.join(str(x) for x in sm)}`")
                 lines.append("")
             elif isinstance(az, list) and az:
-                lines.append("#### 该链 异步（补充）")
-                lines.append("")
-                lines.append(f"1. **注解**: `{', '.join(str(x) for x in az)}`")
+                lines.append(f"- **@Async 注解**: `{', '.join(str(x) for x in az)}`")
                 lines.append("")
             elif has_rest or top.get("isRest"):
-                lines.append("#### 该链 REST / JavaDoc（补充）")
-                lines.append("")
-                n_sub = 1
                 ep = _rest_endpoint_display(te)
                 if ep:
-                    lines.append(f"{n_sub}. **REST**: `{ep}`")
-                    n_sub += 1
+                    lines.append(f"- **REST**: `{ep}`")
                 rs = te.get("restSummary")
                 cb = te.get("classBasePath")
                 if isinstance(cb, str) and cb.strip() and not (isinstance(rs, str) and rs.strip()):
-                    lines.append(f"{n_sub}. **类级 base**: `{cb.strip()}`")
-                    n_sub += 1
+                    lines.append(f"- **类级 base**: `{cb.strip()}`")
                 jd = te.get("javadoc")
                 if isinstance(jd, str) and jd.strip():
-                    lines.append(f"{n_sub}. **JavaDoc**:")
-                    lines.append("")
+                    lines.append("- **JavaDoc**:")
                     for jl in jd.strip().splitlines():
                         lines.append(f"  {jl}")
                 lines.append("")
@@ -652,7 +710,7 @@ _DOWN_STOP_LABEL: dict[str, str] = {
 
 
 def format_downchain_markdown(payload: dict[str, Any]) -> str:
-    """向下调用子图 JSON → Markdown（含概要、终点分类重点）。"""
+    """向下调用子图 JSON → Markdown（查询、说明、统计、重点（下游终点）、ASCII 树等细则、文末嵌入 JSON）。"""
     q = payload.get("query") if isinstance(payload.get("query"), dict) else {}
     project = str(q.get("projectRoot", ""))
     mode = str(q.get("mode", "class_method"))
@@ -666,9 +724,18 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
 
     buckets, leaf_keys = _collect_downstream_sinks_by_kind(nodes, edges)
 
+    start_key = payload.get("startKey")
+    ascii_tree = _ascii_tree_for_downchain_graph(
+        start_key if isinstance(start_key, str) else None,
+        nodes,
+        edges,
+    )
+
     def _lines_for_bucket(kind: str, title: str, hint: str) -> list[str]:
         keys = buckets.get(kind, [])
-        out: list[str] = [f"### {title}", "", hint, ""]
+        out: list[str] = [f"### {title}", ""]
+        if hint.strip():
+            out.extend([hint, ""])
         if not keys:
             out.append("_（本图中未匹配到该类启发式规则）_")
             out.append("")
@@ -683,13 +750,7 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
         return out
 
     lines: list[str] = [
-        "# Java 向下调用子图（outgoing BFS）",
-        "",
-        "## 概要说明",
-        "",
-        "本报告为 **向下** 调用子图：自起点方法沿 LSP **outgoingCalls** 做 BFS，收集被调方法及边表。",
-        "**阅读重点**：下列「下游终点分类」按启发式将节点归为 **数据库访问**、**中间件**、**第三方/HTTP 客户端**；规则基于类名/包路径/方法名（非 AST），仅供参考。标记「（叶）」表示在该子图中 **无进一步出边** 的节点。",
-        "**Markdown 与 JSON**：简单 **get/set/is** 叶节点在 Markdown 中 **按文件汇总条数**，不逐条展开；**末尾 JSON 的 `nodes` 仍为完整节点**，无删减。",
+        "# Java 向下调用子图（callchain-down）",
         "",
         "## 查询",
         "",
@@ -704,70 +765,70 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"- **line**: `{q.get('line', '')}`")
     elif mode == "keyword":
         lines.append(f"- **keyword**: `{q.get('keyword', '')}`")
+    if q.get("mergeBeanGetSet"):
+        lines.append("- **mergeBeanGetSet**: `true`")
 
     ra = q.get("restMapAnchor")
     if isinstance(ra, dict) and ra:
         lines.append("")
-        lines.append("### REST 映射锚点（rest-map 追溯）")
+        lines.append("### REST 映射锚点（rest-map）")
         lines.extend(rest_map_anchor_markdown_lines(ra))
 
     lines.extend(
         [
             "",
-            "## 参数与统计",
+            "## 说明",
             "",
-            f"- **stopReason**: {_DOWN_STOP_LABEL.get(sr, sr)} (`{sr}`)",
-            f"- **nodes**: {stats.get('nodeCount', len(nodes))}",
-            f"- **edges**: {stats.get('edgeCount', len(edges))}",
-            f"- **expanded**: {stats.get('expandedCount', '')}",
-            f"- **maxDepth / maxNodes / maxBranches**: {stats.get('maxDepth')} / {stats.get('maxNodes')} / {stats.get('maxBranches')}",
+            "- **遍历**: 自起点沿 LSP **`outgoingCalls`** BFS；**ASCII 树**与 JSON 的 `startKey`、`nodes`、`edges` 一致。",
+            "- **Markdown / JSON**: 简单 get/set/is 叶节点在正文里常按文件汇总；**完整节点仍以文末 JSON `nodes` 为准**。",
+            "",
         ]
     )
-    if jerr:
-        lines.append(f"- **JDTLS 错误次数**: {len(jerr)}（详见 JSON `jdtlsErrors`）")
 
-    lines.extend(
-        [
-            "",
-            "## 下游终点分类（重点）",
-            "",
-            "以下为图中匹配到的节点；同一节点仅出现在其主分类中。",
-            "",
-        ]
-    )
-    lines.extend(
-        _lines_for_bucket(
-            "database",
-            "数据库访问（Repository / DAO / JDBC / JPA 等启发式）",
-            "_典型：类名或路径含 Repository、Mapper、JdbcTemplate、EntityManager 等。_",
+    stat_bits: list[str] = [
+        f"- **stopReason**: `{sr}` — {_DOWN_STOP_LABEL.get(sr, sr)}",
+        (
+            f"- **规模**: nodes={stats.get('nodeCount', len(nodes))} · edges={stats.get('edgeCount', len(edges))} · "
+            f"expanded={stats.get('expandedCount', '')}"
+        ),
+        (
+            f"- **上限**: maxDepth={stats.get('maxDepth')} · maxNodes={stats.get('maxNodes')} · "
+            f"maxBranches={stats.get('maxBranches')}"
+        ),
+    ]
+    impl_fb = int(stats.get("implementationFallbackEdges") or 0)
+    if impl_fb > 0:
+        stat_bits.append(
+            f"- **implementation 兜底边**（`outgoingCalls` 为空时经 `textDocument/implementation`）: {impl_fb}"
         )
-    )
-    lines.extend(
-        _lines_for_bucket(
-            "middleware",
-            "中间件（消息、缓存、Mongo 等启发式）",
-            "_典型：Kafka、Rabbit、Redis、AMQP、MongoTemplate 等相关命名。_",
-        )
-    )
-    lines.extend(
-        _lines_for_bucket(
-            "external_api",
-            "第三方 / HTTP 客户端（RestTemplate、WebClient、Feign 等启发式）",
-            "_典型：RestTemplate、WebClient、OpenFeign、HttpClient、OkHttp 等。_",
-        )
-    )
+    if jerr:
+        stat_bits.append(f"- **JDTLS 错误**: {len(jerr)} 条（见 JSON `jdtlsErrors`）")
+    lines.extend(["", "## 统计", ""] + stat_bits)
 
     other_keys = [k for k in buckets.get("other", []) if k in leaf_keys]
     accessor_keys = [k for k in other_keys if isinstance(nodes.get(k), dict) and _is_simple_accessor_leaf(nodes[k])]
     accessor_set = set(accessor_keys)
     other_non_accessor = sorted([k for k in other_keys if k not in accessor_set])
 
+    lines.extend(
+        [
+            "",
+            "## 重点（下游终点）",
+            "",
+            "_按类名/包路径/方法名启发式归类（**非 AST**）；「（叶）」= 本子图中无出边。同一节点只出现在一个主分类。_",
+            "",
+        ]
+    )
+    lines.extend(_lines_for_bucket("database", "数据库", ""))
+    lines.extend(_lines_for_bucket("middleware", "中间件", ""))
+    lines.extend(_lines_for_bucket("external_api", "第三方 HTTP", ""))
+
     if accessor_keys:
         lines.extend(
             [
-                "### 简单 getter/setter 叶节点（Markdown 归并；JSON 仍完整）",
+                "### 简单 accessor 叶节点（正文汇总）",
                 "",
-                f"_共 **{len(accessor_keys)}** 个；按 **源文件** 汇总如下，**不**逐方法列出。详细键名与行列见文末 JSON `nodes`。",
+                f"_共 **{len(accessor_keys)}** 个；按源文件汇总；**完整键名见 JSON** `nodes`。_",
                 "",
             ]
         )
@@ -779,22 +840,97 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
     if other_non_accessor:
         lines.extend(
             [
-                "### 其他叶节点（非上述三类，且非简单 get/set/is；在本子图中无出边）",
+                "### 其他叶节点",
                 "",
-                "_逐条列出（构造器、业务方法等）；完整见 JSON。_",
+                "_非上述三类且非简单 get/set/is；子图中无出边。_",
                 "",
             ]
         )
-        cap = 40
-        for j, nk in enumerate(other_non_accessor[:cap], start=1):
+        cap_o = 40
+        for j, nk in enumerate(other_non_accessor[:cap_o], start=1):
             n = nodes.get(nk) if isinstance(nodes.get(nk), dict) else {}
             if n:
                 lines.append(_md_numbered_compact_only(j, n))
             else:
                 lines.append(f"{j}. `{nk}`")
-        if len(other_non_accessor) > cap:
-            lines.append(f"{min(len(other_non_accessor), cap) + 1}. … 其余 **{len(other_non_accessor) - cap}** 条略（见 `nodes`）")
+        if len(other_non_accessor) > cap_o:
+            lines.append(f"{min(len(other_non_accessor), cap_o) + 1}. … 其余 **{len(other_non_accessor) - cap_o}** 条略（见 `nodes`）")
         lines.append("")
+
+    lines.extend(
+        [
+            "## ASCII 树（展开）",
+            "",
+            "_沿出边向下；多分支用 ``├──`` / ``└──``。_",
+            "",
+            "```text",
+            ascii_tree,
+            "```",
+            "",
+        ]
+    )
+
+    merged_nodes_keys: list[str] = []
+    for nk, n in nodes.items():
+        if not isinstance(n, dict):
+            continue
+        mba = n.get("mergedBeanAccessors")
+        if isinstance(mba, dict) and mba:
+            merged_nodes_keys.append(nk)
+
+    if merged_nodes_keys:
+        lines.extend(
+            [
+                "## JavaBean（get/set/is 合并）",
+                "",
+                "_`--merge-bean-get-set`：折叠简单 accessor 叶节点，在调用者上标注 bean 的 set/get/is。_",
+                "",
+            ]
+        )
+        cap = 60
+        merged_nodes_keys_sorted = sorted(
+            merged_nodes_keys,
+            key=lambda k: (
+                str(nodes.get(k, {}).get("class", "")),
+                str(nodes.get(k, {}).get("method", "")),
+                str(nodes.get(k, {}).get("file", "")),
+                int(nodes.get(k, {}).get("line", 0) or 0),
+            ),
+        )
+        for i, nk in enumerate(merged_nodes_keys_sorted[:cap], start=1):
+            n = nodes.get(nk) if isinstance(nodes.get(nk), dict) else {}
+            disp = _short_node_line_compact(n)
+            lines.append(f"{i}. {disp}")
+            mba = n.get("mergedBeanAccessors")
+            if not isinstance(mba, dict):
+                continue
+            for bean_cls in sorted(mba.keys(), key=lambda x: str(x)):
+                b = mba.get(bean_cls) if isinstance(mba.get(bean_cls), dict) else {}
+                setters = b.get("setters") if isinstance(b.get("setters"), list) else []
+                getters = b.get("getters") if isinstance(b.get("getters"), list) else []
+                isters = b.get("isters") if isinstance(b.get("isters"), list) else []
+                if not setters and not getters and not isters:
+                    continue
+                parts: list[str] = []
+                if setters:
+                    s0 = ", ".join(str(x) for x in setters[:10])
+                    if len(setters) > 10:
+                        s0 += ", …"
+                    parts.append(f"set=[{s0}]")
+                if getters:
+                    g0 = ", ".join(str(x) for x in getters[:10])
+                    if len(getters) > 10:
+                        g0 += ", …"
+                    parts.append(f"get=[{g0}]")
+                if isters:
+                    i0 = ", ".join(str(x) for x in isters[:10])
+                    if len(isters) > 10:
+                        i0 += ", …"
+                    parts.append(f"is=[{i0}]")
+                lines.append(f"   {bean_cls}: " + ", ".join(parts))
+            lines.append("")
+        if len(merged_nodes_keys_sorted) > cap:
+            lines.append(f"… 共 {len(merged_nodes_keys_sorted)} 个调用者节点，已截断显示前 {cap} 个。")
 
     km = payload.get("keyMethods")
     if isinstance(km, list) and km:
@@ -802,7 +938,7 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
             [
                 "## 关键业务候选（step6）",
                 "",
-                "_启发式：Service 层、子图内可达持久化边界、`@Transactional`、多上游入度等；节点字段见 JSON ``businessScore`` / ``businessCandidate`` / ``businessSignals``。_",
+                "_启发式评分；字段见 JSON `businessScore` / `businessCandidate` / `businessSignals`。_",
                 "",
             ]
         )
@@ -827,14 +963,15 @@ def format_downchain_markdown(payload: dict[str, Any]) -> str:
 
     lines.extend(
         [
-            "## 边列表（from → to，前 200 条）",
+            "## 边（from → to，前 200）",
             "",
         ]
     )
     for i, e in enumerate(edges[:200]):
         if not isinstance(e, dict):
             continue
-        lines.append(f"{i + 1}. `{e.get('from', '')}` → `{e.get('to', '')}`")
+        suf = "（实现类兜底）" if e.get("syntheticImplementation") else ""
+        lines.append(f"{i + 1}. `{e.get('from', '')}` → `{e.get('to', '')}`{suf}")
     if len(edges) > 200:
         lines.append(f"… 共 {len(edges)} 条，仅显示前 200 条")
     lines.extend(["", "## 原始 JSON", "", "```json", json.dumps(payload, ensure_ascii=False, indent=2), "```", ""])
@@ -897,6 +1034,7 @@ def summarize_trace_down_json(raw: str) -> dict[str, Any]:
     out_d: dict[str, Any] = {
         "nodeCount": stats.get("nodeCount"),
         "edgeCount": stats.get("edgeCount"),
+        "implementationFallbackEdges": stats.get("implementationFallbackEdges"),
         "stopReason": obj.get("stopReason"),
         "jdtlsErrors": obj.get("jdtlsErrors") or [],
     }

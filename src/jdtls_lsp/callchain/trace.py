@@ -116,6 +116,43 @@ def _extract_java_package(raw: str) -> str | None:
     return m.group(1) if m else None
 
 
+_SQL_IDENT_UC_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _looks_like_sql_schema_table(left: str, right: str) -> bool:
+    """
+    仅用于拦截 `--query` 的 `Class.method` 拆分误判：
+    当用户输入类似 `schema.tablename`（通常均为全小写的 SQL 标识符）时，
+    不应将其拆成 Java 的类/方法入口。
+    """
+    # 仅在“全大写 SQL 标识符”时按普通关键字处理（不拆分 class/method）。
+    return bool(_SQL_IDENT_UC_RE.match(left) and _SQL_IDENT_UC_RE.match(right))
+
+
+def _find_last_unescaped_dot_index(s: str) -> int | None:
+    """在字符串中找“最后一个未被反斜杠转义”的 `.`。
+
+    例如：`a\\.b` 中的 `.` 会被视为转义，返回 None。
+    """
+    for i in range(len(s) - 1, -1, -1):
+        if s[i] != ".":
+            continue
+        # 统计 i 前面连续的反斜杠数量：奇数个表示当前 `.` 被转义
+        bs = 0
+        j = i - 1
+        while j >= 0 and s[j] == "\\":
+            bs += 1
+            j -= 1
+        if bs % 2 == 0:
+            return i
+    return None
+
+
+def _unescape_dots_for_keyword(s: str) -> str:
+    """把 `\\.` 还原为 `.`，用于 keyword/grep 搜索。"""
+    return re.sub(r"\\\.", ".", s)
+
+
 def _expected_java_package_for_fqcn(fqcn: str) -> str:
     parts = fqcn.strip().split(".")
     if len(parts) < 2:
@@ -1056,6 +1093,100 @@ def _item_to_node_key(item: dict[str, Any], root: Path) -> str:
     return _node_key(_node_from_item(item, root))
 
 
+def _implementation_locations_from_result(result: Any) -> list[tuple[str, int, int]]:
+    """
+    解析 ``textDocument/implementation`` 返回的 ``Location`` / ``LocationLink`` 列表，
+    得到 (uri, line0, char0) 供 ``prepareCallHierarchy``。
+    """
+    out: list[tuple[str, int, int]] = []
+    for x in _norm_list(result):
+        if not isinstance(x, dict):
+            continue
+        uri = str(x.get("targetUri") or x.get("uri") or "").strip()
+        if not uri:
+            continue
+        if "targetUri" in x:
+            sel = x.get("targetSelectionRange") or x.get("targetRange") or {}
+        else:
+            sel = x.get("range") or {}
+        if not isinstance(sel, dict):
+            continue
+        st = sel.get("start")
+        if not isinstance(st, dict):
+            continue
+        out.append((uri, int(st.get("line", 0)), int(st.get("character", 0))))
+    return out
+
+
+def _outgoing_calls_via_implementation_fallback(
+    client: LSPClient,
+    root: Path,
+    item: dict[str, Any],
+    *,
+    max_impl: int,
+) -> list[dict[str, Any]]:
+    """
+    当 ``callHierarchy/outgoingCalls`` 在 **接口方法 / abstract 方法** 上为空时，
+    用 ``textDocument/implementation`` 找到实现类中的对应方法，再 ``prepareCallHierarchy``，
+    合成与 outgoingCalls 同结构的条目，便于继续向下 BFS。
+    """
+    uri = str(item.get("uri", "")).strip()
+    sel = item.get("selectionRange")
+    if not isinstance(sel, dict):
+        return []
+    st = sel.get("start")
+    if not isinstance(st, dict):
+        return []
+    line0 = int(st.get("line", 0))
+    char0 = int(st.get("character", 0))
+    path = _uri_to_path(uri)
+    if path and path.exists():
+        try:
+            client.open_file(str(path))
+        except OSError:
+            pass
+
+    try:
+        raw = client.request(
+            "textDocument/implementation",
+            {"textDocument": {"uri": uri}, "position": {"line": line0, "character": char0}},
+        )
+    except RuntimeError as e:
+        _log.debug("textDocument/implementation failed: %s", e)
+        return []
+
+    locs = _implementation_locations_from_result(raw)
+    if not locs:
+        return []
+
+    out: list[dict[str, Any]] = []
+    seen_to: set[str] = set()
+    for u, l0, c0 in locs:
+        to_item = _prepare_item(client, u, l0, c0)
+        if not isinstance(to_item, dict):
+            continue
+        tk = _item_to_node_key(to_item, root)
+        if tk in seen_to:
+            continue
+        seen_to.add(tk)
+        out.append(
+            {
+                "to": to_item,
+                "fromRanges": [],
+                "syntheticImplementation": True,
+            }
+        )
+        if len(out) >= max_impl:
+            break
+
+    if out:
+        _log.debug(
+            "outgoingCalls empty: added %s edge(s) via textDocument/implementation",
+            len(out),
+        )
+    return out
+
+
 def _trace_outgoing_bfs(
     client: LSPClient,
     root: Path,
@@ -1079,6 +1210,7 @@ def _trace_outgoing_bfs(
     expanded: set[str] = set()
     jdtls_errors: list[dict[str, Any]] = []
     stop_reason = "complete"
+    implementation_fallback_edges = 0
 
     sk = _item_to_node_key(start_item, root)
     nodes[sk] = _node_from_item(start_item, root)
@@ -1104,6 +1236,12 @@ def _trace_outgoing_bfs(
             continue
 
         arr = [x for x in _norm_list(raw) if isinstance(x, dict)]
+        if not arr:
+            arr = _outgoing_calls_via_implementation_fallback(
+                client, root, item, max_impl=max_branches
+            )
+            if arr:
+                implementation_fallback_edges += len(arr)
         arr.sort(key=lambda x: str((x.get("to") or {}).get("name", "")))
 
         if len(arr) > max_branches:
@@ -1137,6 +1275,7 @@ def _trace_outgoing_bfs(
     return {
         "nodes": nodes,
         "edges": edges,
+        "startKey": sk,
         "stats": {
             "nodeCount": len(nodes),
             "edgeCount": len(edges),
@@ -1144,10 +1283,120 @@ def _trace_outgoing_bfs(
             "maxDepth": max_depth,
             "maxNodes": max_nodes,
             "maxBranches": max_branches,
+            "implementationFallbackEdges": implementation_fallback_edges,
         },
         "stopReason": stop_reason,
         "jdtlsErrors": jdtls_errors,
     }
+
+
+def _method_name_without_return(meth: str) -> str:
+    """`getFoo() : String` → `getFoo()`。用于抽取 accessors 规则。"""
+    m = str(meth).strip()
+    if " : " in m:
+        m = m.split(" : ", 1)[0].strip()
+    return m
+
+
+def _is_simple_accessor_method_signature(meth: str) -> bool:
+    """简单 JavaBean 风格 getter/setter/isFoo（用于折叠）。"""
+    m = _method_name_without_return(meth)
+    return bool(re.match(r"^(get|set|is)[A-Za-z_]\w*\s*\(", m))
+
+
+def _accessor_kind_and_simple_name(meth: str) -> tuple[str, str]:
+    """
+    返回 (kind, simpleName)
+    - kind: 'set' | 'get' | 'is'
+    - simpleName: setTaskName / getId / isActive
+    """
+    m = _method_name_without_return(meth)
+    simple = m.split("(", 1)[0].strip()
+    if simple.startswith("set"):
+        return "set", simple
+    if simple.startswith("get"):
+        return "get", simple
+    if simple.startswith("is"):
+        return "is", simple
+    return "unknown", simple
+
+
+def _merge_bean_get_set_into_callers(subgraph: dict[str, Any], *, exclude_node_key: str | None) -> None:
+    """
+    可选折叠：
+    - 把“简单 get/set/is 的叶节点”从图里删除；
+    - 并把它们的调用信息写回父节点（caller），字段 `mergedBeanAccessors`。
+
+    注：callHierarchy 无 receiver 变量名，只能按被调用 accessor 所属类 `nodes[to]['class']` 分组。
+    """
+    nodes = subgraph.get("nodes")
+    edges = subgraph.get("edges")
+    if not isinstance(nodes, dict) or not isinstance(edges, list) or not nodes:
+        return
+
+    outgoing_from: set[str] = set()
+    for e in edges:
+        if isinstance(e, dict) and isinstance(e.get("from"), str):
+            outgoing_from.add(e["from"])
+
+    leaf_keys = {k for k in nodes.keys() if k not in outgoing_from}
+
+    accessor_leaf_keys: set[str] = set()
+    for k in leaf_keys:
+        n = nodes.get(k)
+        if not isinstance(n, dict):
+            continue
+        if exclude_node_key and k == exclude_node_key:
+            continue
+        if _is_simple_accessor_method_signature(str(n.get("method", ""))):
+            accessor_leaf_keys.add(k)
+
+    if not accessor_leaf_keys:
+        return
+
+    # 先写注释，再统一删节点/边。
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        from_k = e.get("from")
+        to_k = e.get("to")
+        if not isinstance(from_k, str) or not isinstance(to_k, str):
+            continue
+        if to_k not in accessor_leaf_keys:
+            continue
+        parent = nodes.get(from_k)
+        child = nodes.get(to_k)
+        if not isinstance(parent, dict) or not isinstance(child, dict):
+            continue
+
+        bean_cls = str(child.get("class", "")).strip() or "?"
+        kind, simple = _accessor_kind_and_simple_name(str(child.get("method", "")))
+        bucket_key = {"set": "setters", "get": "getters", "is": "isters"}.get(kind)
+        if bucket_key is None:
+            continue
+
+        merged = parent.setdefault("mergedBeanAccessors", {})
+        bean_bucket = merged.setdefault(bean_cls, {"setters": [], "getters": [], "isters": []})
+        if simple and simple not in bean_bucket[bucket_key]:
+            bean_bucket[bucket_key].append(simple)
+
+    # 删除折叠节点 + 相关边。
+    new_nodes: dict[str, Any] = {k: v for k, v in nodes.items() if k not in accessor_leaf_keys}
+    new_edges: list[dict[str, Any]] = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        to_k = e.get("to")
+        if isinstance(to_k, str) and to_k in accessor_leaf_keys:
+            continue
+        new_edges.append(e)
+
+    subgraph["nodes"] = new_nodes
+    subgraph["edges"] = new_edges
+    subgraph.setdefault("mergedAccessorLeafCount", len(accessor_leaf_keys))
+    if isinstance(subgraph.get("stats"), dict):
+        subgraph["stats"]["nodeCount"] = len(new_nodes)
+        subgraph["stats"]["edgeCount"] = len(new_edges)
 
 
 def _find_method_signature_line(lines: list[str], line0: int) -> int:
@@ -1377,6 +1626,7 @@ def _finalize_downchain(
         "traversal": "bfs",
         "nodes": subgraph.get("nodes", {}),
         "edges": subgraph.get("edges", []),
+        "startKey": subgraph.get("startKey"),
         "stats": subgraph.get("stats", {}),
         "stopReason": subgraph.get("stopReason", ""),
         "jdtlsErrors": subgraph.get("jdtlsErrors", []),
@@ -1407,6 +1657,7 @@ def trace_outgoing_subgraph_sync(
     grep_skip_interface: bool = False,
     grep_skip_rest: bool = False,
     grep_max_entry_points: int | None = None,
+    merge_bean_get_set: bool = False,
 ) -> str:
     """
     自起点 **向下** BFS 展开 ``callHierarchy/outgoingCalls``，产出有向子图（节点 + 边表）。
@@ -1428,12 +1679,23 @@ def trace_outgoing_subgraph_sync(
     if has_q and not has_cm and not has_fl:
         sq0 = str(symbol_query).strip()
         if "|" not in sq0 and "｜" not in sq0 and "." in sq0:
-            left, right = sq0.rsplit(".", 1)
-            if left and right and re.match(r"^[A-Za-z_]\w*$", right):
-                class_name = left
-                method_name = right
-                has_cm = True
-                has_q = False
+            dot_i = _find_last_unescaped_dot_index(sq0)
+            if dot_i is not None:
+                left_raw = sq0[:dot_i]
+                right_raw = sq0[dot_i + 1 :]
+                if left_raw and right_raw and re.match(r"^[A-Za-z_]\w*$", right_raw):
+                    # 避免把 `schema.tablename`（SQL 标识符）当成 `Class.method` 解析
+                    left = _unescape_dots_for_keyword(left_raw)
+                    right = _unescape_dots_for_keyword(right_raw)
+                    if not _looks_like_sql_schema_table(left, right):
+                        class_name = left
+                        method_name = right
+                        has_cm = True
+                        has_q = False
+            # 即：当用户转义了 `.`（如 schema\.tablename）时，不会触发 class/method 拆分；
+            # 走 keyword 路径前，先把 `\.` 还原成普通 `.`。
+            if has_q:
+                symbol_query = _unescape_dots_for_keyword(sq0)
 
     has_cm = bool(class_name and str(class_name).strip()) and bool(method_name and str(method_name).strip())
     has_q = bool(symbol_query and str(symbol_query).strip()) and not has_cm
@@ -1584,6 +1846,10 @@ def trace_outgoing_subgraph_sync(
             max_nodes=max(1, int(max_nodes)),
             max_branches=max(1, int(max_branches)),
         )
+        if merge_bean_get_set:
+            start_key = subgraph.get("startKey") if isinstance(subgraph.get("startKey"), str) else None
+            _merge_bean_get_set_into_callers(subgraph, exclude_node_key=start_key)
+            query_meta["mergeBeanGetSet"] = True
         out = _finalize_downchain(root, subgraph, query_meta, output_format)
         _log.info(
             "trace_outgoing_subgraph_sync nodes=%s edges=%s",
@@ -1640,12 +1906,24 @@ def trace_call_chain_sync(
     if has_q and not has_cm and not has_fl:
         sq0 = str(symbol_query).strip()
         if "|" not in sq0 and "｜" not in sq0 and "." in sq0:
-            left, right = sq0.rsplit(".", 1)
-            if left and right and re.match(r"^[A-Za-z_]\w*$", right):
-                class_name = left
-                method_name = right
-                has_cm = True
-                has_q = False
+            dot_i = _find_last_unescaped_dot_index(sq0)
+            if dot_i is not None:
+                left_raw = sq0[:dot_i]
+                right_raw = sq0[dot_i + 1 :]
+                if left_raw and right_raw and re.match(r"^[A-Za-z_]\w*$", right_raw):
+                    # 避免把 `schema.tablename`（SQL 标识符）当成 `Class.method` 解析
+                    left = _unescape_dots_for_keyword(left_raw)
+                    right = _unescape_dots_for_keyword(right_raw)
+                    if not _looks_like_sql_schema_table(left, right):
+                        class_name = left
+                        method_name = right
+                        has_cm = True
+                        has_q = False
+
+            # 即：当用户转义了 `.`（如 schema\.tablename）时，不会触发 class/method 拆分；
+            # 走 keyword 路径前，先把 `\.` 还原成普通 `.`。
+            if has_q:
+                symbol_query = _unescape_dots_for_keyword(sq0)
 
     has_cm = bool(class_name and str(class_name).strip()) and bool(method_name and str(method_name).strip())
     has_q = bool(symbol_query and str(symbol_query).strip()) and not has_cm

@@ -167,8 +167,7 @@
 | `jdtls_lsp/java_javadoc.py` | `extract_javadoc_above_method`：从源码行解析方法紧上方 `/** … */`（`business.md`、链顶 REST `topEntry` 等共用） |
 | `jdtls_lsp/business_summary/`（与 `reverse_design/` 平级） | **step6**、CLI `--business-summary`：`annotate_downchain_business`、`merge_key_methods_from_downchain_files`、`format_business_md`（再导出 `extract_javadoc_above_method` 自 `java_javadoc`） |
 | `reverse_design/bundle.py` | 一键产出 `design/` + 可选 `callchain-up-*` / `callchain-up-table/<表>/…` / `callchain-down-entrypoints/<safe_entrypoint_file>/…` Markdown（文末 JSON） |
-| `reverse_design/entrypoint_callchain_down.py` | 从 `scan_java_entrypoints` 批量 `callchain-down`（CLI `--entrypoint-callchain-down`） |
-| `reverse_design/rest_callchain_down.py` | **历史实现**：从 `rest-map` 批量 `callchain-down`（保留为库 API，用于解释性/对照） |
+| `reverse_design/entrypoint_callchain_down.py` | `scan_java_entrypoints` 批量 `callchain-down`（CLI `--entrypoint-callchain-down`）；另含 `run_rest_callchain_down`（`rest-map` 端点 → 同源 `trace_outgoing_subgraph_sync`） |
 | `reverse_design/table_callchain_up.py` | 按表 `callchain-up`（CLI `--table-callchain-up`） |
 
 ---
