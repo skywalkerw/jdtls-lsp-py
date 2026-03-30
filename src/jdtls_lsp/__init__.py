@@ -4,7 +4,7 @@ from jdtls_lsp.callchain import extract_top_entry_info, format_callchain_markdow
 from jdtls_lsp.java_grep import java_grep_report
 from jdtls_lsp.logutil import setup_logging
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
