@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from jdtls_lsp.java_grep import SKIP_DIR_PARTS, java_scan_roots, walk_files_matching
+
 MAPPER_NAMESPACE = re.compile(
     r"<mapper\b[^>]*\bnamespace\s*=\s*[\"']([^\"']+)[\"']",
     re.IGNORECASE | re.DOTALL,
@@ -23,19 +25,22 @@ def _find_java_file_for_fqcn(project_root: Path, fqcn: str) -> Path | None:
         if trial.is_file():
             return trial
     stem = rel.split("/")[-1]
-    for p in sorted(root.rglob(stem)):
-        if not p.is_file() or p.suffix.lower() != ".java":
-            continue
-        try:
-            if p.resolve() == (root / "src/main/java" / rel).resolve():
-                return p
-        except ValueError:
-            pass
-        try:
-            if str(p.relative_to(root)).replace("\\", "/").endswith(rel):
-                return p
-        except ValueError:
-            continue
+    for base in java_scan_roots(root):
+        for p in sorted(walk_files_matching(base, stem)):
+            if not p.is_file() or p.suffix.lower() != ".java":
+                continue
+            if any(x in p.parts for x in SKIP_DIR_PARTS):
+                continue
+            try:
+                if p.resolve() == (root / "src/main/java" / rel).resolve():
+                    return p
+            except ValueError:
+                pass
+            try:
+                if str(p.relative_to(root)).replace("\\", "/").endswith(rel):
+                    return p
+            except ValueError:
+                continue
     return None
 
 

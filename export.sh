@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[export] 项目目录: ${PROJECT_DIR}"
-echo "[export] 使用 Python 生成 zip（与 export.bat / scripts/export_portable.py 一致）..."
+echo "[export] 使用 Python 生成 tar.gz（与 export.bat / scripts/export_portable.py 一致）..."
 
 if command -v python3 >/dev/null 2>&1; then
   python3 "${PROJECT_DIR}/scripts/export_portable.py"

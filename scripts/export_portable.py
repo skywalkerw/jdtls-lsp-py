@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""生成 portable full/mini zip（与 export.sh 规则一致，跨平台）。"""
+"""生成 portable full/mini tar.gz（与 export.sh 规则一致，跨平台）。"""
 from __future__ import annotations
 
 import os
-import zipfile
+import tarfile
 from pathlib import Path
 
 
@@ -36,7 +36,7 @@ def should_exclude(rel: str, project: str, mini: bool) -> bool:
     return False
 
 
-def add_tree(zf: zipfile.ZipFile, base: Path, project: str, mini: bool) -> int:
+def add_tree(tar: tarfile.TarFile, base: Path, project: str, mini: bool) -> int:
     count = 0
     root = base / project
     for p in root.rglob("*"):
@@ -49,9 +49,18 @@ def add_tree(zf: zipfile.ZipFile, base: Path, project: str, mini: bool) -> int:
             continue
         if should_exclude(rel_s, project, mini):
             continue
-        zf.write(p, rel_s)
+        tar.add(p, arcname=rel_s, recursive=False)
         count += 1
     return count
+
+
+def _verify_flags(names: list[str], project: str) -> dict[str, bool]:
+    return {
+        "offline-packages": any(n.startswith(f"{project}/offline-packages/") for n in names),
+        "openjdk": any(n.startswith(f"{project}/openjdk/") for n in names),
+        "jdtls": any(n.startswith(f"{project}/jdtls/") for n in names),
+        "DS_Store": any(n.endswith(".DS_Store") for n in names),
+    }
 
 
 def main() -> None:
@@ -60,35 +69,30 @@ def main() -> None:
     project_name = project_dir.name
     os.chdir(str(workspace))
 
-    full_zip = workspace / f"{project_name}-portable-full.zip"
-    mini_zip = workspace / f"{project_name}-portable-mini.zip"
+    full_path = workspace / f"{project_name}-portable-full.tar.gz"
+    mini_path = workspace / f"{project_name}-portable-mini.tar.gz"
 
     print(f"[export] 项目目录: {project_dir}")
     print(f"[export] 输出目录: {workspace}")
 
     print("[export] 生成 full 包（包含 offline-packages）...")
-    if full_zip.exists():
-        full_zip.unlink()
-    with zipfile.ZipFile(full_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        n = add_tree(zf, workspace, project_name, mini=False)
-    print(f"[export] full entries={n} size_mb={full_zip.stat().st_size / (1024*1024):.2f}")
+    if full_path.exists():
+        full_path.unlink()
+    with tarfile.open(full_path, "w:gz") as tar:
+        n = add_tree(tar, workspace, project_name, mini=False)
+    print(f"[export] full entries={n} size_mb={full_path.stat().st_size / (1024*1024):.2f}")
 
     print("[export] 生成 mini 包（不包含 offline-packages）...")
-    if mini_zip.exists():
-        mini_zip.unlink()
-    with zipfile.ZipFile(mini_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        n = add_tree(zf, workspace, project_name, mini=True)
-    print(f"[export] mini entries={n} size_mb={mini_zip.stat().st_size / (1024*1024):.2f}")
+    if mini_path.exists():
+        mini_path.unlink()
+    with tarfile.open(mini_path, "w:gz") as tar:
+        n = add_tree(tar, workspace, project_name, mini=True)
+    print(f"[export] mini entries={n} size_mb={mini_path.stat().st_size / (1024*1024):.2f}")
 
-    for p in (full_zip, mini_zip):
-        with zipfile.ZipFile(p, "r") as zf:
-            names = zf.namelist()
-        flags = {
-            "offline-packages": any(n.startswith(f"{project_name}/offline-packages/") for n in names),
-            "openjdk": any(n.startswith(f"{project_name}/openjdk/") for n in names),
-            "jdtls": any(n.startswith(f"{project_name}/jdtls/") for n in names),
-            "DS_Store": any(n.endswith(".DS_Store") for n in names),
-        }
+    for p in (full_path, mini_path):
+        with tarfile.open(p, "r:gz") as tf:
+            names = tf.getnames()
+        flags = _verify_flags(names, project_name)
         print(f"[export] {p.name}\t{p.stat().st_size / (1024*1024):.2f} MB\tentries={len(names)}\t{flags}")
 
     print("[export] 完成。")

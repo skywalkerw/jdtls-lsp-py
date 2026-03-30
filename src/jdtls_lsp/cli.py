@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d_bun = rdg.add_parser(
         "bundle",
-        help="[step8 编排] 写 design/；默认 step1–3，可选 step4–6（--rest-callchains-down / --table-callchains-up / --queries / --business-summary）",
+        help="[step8 编排] 写 design/；默认 step1–3，可选 step4–6（--entrypoint-callchain-down / --table-callchain-up / --queries / --business-summary）",
     )
     d_bun.add_argument("project", help="项目根目录")
     d_bun.add_argument(
@@ -305,12 +305,12 @@ def main(argv: list[str] | None = None) -> int:
     d_bun.add_argument(
         "--skip-callchain",
         action="store_true",
-        help="跳过 step4/step5/step5′：不跑需 JDTLS 的 callchain-up（--queries / --table-callchains-up）与 callchain-down（--rest-callchains-down）",
+        help="跳过 step4/step5/step5′：不跑需 JDTLS 的 callchain-up（--queries / --table-callchain-up）与 callchain-down（--entrypoint-callchain-down）",
     )
     d_bun.add_argument(
-        "--table-callchains-up",
+        "--table-callchain-up",
         action="store_true",
-        dest="table_callchains_up",
+        dest="table_callchain_up",
         help="[step5] 按表向上：蛇形表 → *ServiceImpl + @Entity；产物 data/callchain-up-table/<物理表>/callchain-up-table-*.md（另含 *-entity.md）",
     )
     d_bun.add_argument(
@@ -321,29 +321,30 @@ def main(argv: list[str] | None = None) -> int:
         help="按表锚点扫描时最多检查的 *ServiceImpl.java 与同表实体 *.java 路径数，默认 12000",
     )
     d_bun.add_argument(
-        "--table-callchains-up-extra",
+        "--table-callchain-up-extra",
         action="store_true",
-        dest="table_callchains_up_extra",
-        help="[step5] 须与 --table-callchains-up 同用：在 data/callchain-up-table/<表>/ 下额外生成 *-sql-NN.md、*-mapper-NN.md",
+        dest="table_callchain_up_extra",
+        help="[step5] 须与 --table-callchain-up 同用：在 data/callchain-up-table/<表>/ 下额外生成 *-sql-NN.md、*-mapper-NN.md",
     )
     d_bun.add_argument(
         "--max-table-up-extra-anchors",
         type=int,
         default=24,
         metavar="N",
-        help="与 --table-callchains-up-extra 联用：每张表 SQL 与 MyBatis 各自最多几条起点（0=不限制），默认 24",
+        help="与 --table-callchain-up-extra 联用：每张表 SQL 与 MyBatis 各自最多几条起点（0=不限制），默认 24",
     )
     d_bun.add_argument(
-        "--rest-callchains-down",
+        "--entrypoint-callchain-down",
         action="store_true",
-        help="[step4] 按 REST 端点向下：各端点 callchain-down → data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md",
+        dest="entrypoint_callchain_down",
+        help="[step4] 按 entrypoints 向下：entry_scan.scan_java_entrypoints 的每个起点 callchain-down → data/callchain-down-entrypoints/…/callchain-down-entrypoints-*.md",
     )
     d_bun.add_argument(
         "--max-rest-down-endpoints",
         type=int,
         default=0,
         metavar="N",
-        help="REST 向下链最多处理端点数（按 rest-map 顺序），0 表示不限制",
+        help="entrypoint 向下链最多处理起点数（按 scan_java_entrypoints 返回顺序），0 表示不限制",
     )
     d_bun.add_argument(
         "--rest-down-depth",
@@ -366,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     d_bun.add_argument(
         "--business-summary",
         action="store_true",
-        help="[step6] 合并 data/callchain-down-rest/**/callchain-down-rest-*.md（或 .json，含历史 data 根下扁平文件）的 keyMethods → business.md",
+        help="[step6] 合并向下链报告（callchain-down-rest-* 与 callchain-down-entrypoints-* 的 .md/.json，含历史 data 根下扁平文件）的 keyMethods → business.md",
     )
     d_bun.add_argument("--skip-rest-map", action="store_true", help="跳过 [step2]：不生成 rest-map")
     d_bun.add_argument(
@@ -570,11 +571,11 @@ def main(argv: list[str] | None = None) -> int:
                 strict_tables_only=bool(getattr(args, "strict_tables_only", False)),
                 max_table_java_files=int(getattr(args, "max_table_java_files", 8_000)),
                 max_table_xml_files=int(getattr(args, "max_table_xml_files", 2_000)),
-                table_callchains_up=bool(getattr(args, "table_callchains_up", False)),
+                table_callchain_up=bool(getattr(args, "table_callchain_up", False)),
                 max_table_callchain_java_scan=int(getattr(args, "max_table_callchain_scan", 12_000)),
-                table_callchains_up_extra=bool(getattr(args, "table_callchains_up_extra", False)),
+                table_callchain_up_extra=bool(getattr(args, "table_callchain_up_extra", False)),
                 max_table_up_extra_anchors=int(getattr(args, "max_table_up_extra_anchors", 24)),
-                rest_callchains_down=bool(getattr(args, "rest_callchains_down", False)),
+                entrypoint_callchain_down=bool(getattr(args, "entrypoint_callchain_down", False)),
                 max_rest_down_endpoints=int(getattr(args, "max_rest_down_endpoints", 0)),
                 rest_down_max_depth=int(getattr(args, "rest_down_depth", 8)),
                 rest_down_max_nodes=int(getattr(args, "rest_down_max_nodes", 500)),

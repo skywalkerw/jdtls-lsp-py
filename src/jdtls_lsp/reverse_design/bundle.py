@@ -13,11 +13,11 @@ from typing import Any
 
 from jdtls_lsp.callchain import trace_call_chain_sync
 from jdtls_lsp.client import create_client
-from jdtls_lsp.reverse_design.rest_callchains_down import run_rest_callchains_down
-from jdtls_lsp.entry_scan import scan_rest_map
+from jdtls_lsp.reverse_design.entrypoint_callchain_down import run_entrypoint_callchain_down
+from jdtls_lsp.entry_scan import scan_java_entrypoints, scan_rest_map
 from jdtls_lsp.reverse_design.batch_symbols_by_package import batch_symbols_by_package
 from jdtls_lsp.reverse_design.scan_modules import scan_modules
-from jdtls_lsp.reverse_design.table_callchains_up import run_table_callchains_up
+from jdtls_lsp.reverse_design.table_callchain_up import run_table_callchain_up
 from jdtls_lsp.business_summary import format_business_md, merge_key_methods_from_downchain_files
 from jdtls_lsp.reverse_design.table_manifest import build_table_manifest
 from jdtls_lsp.logutil import get_logger
@@ -71,11 +71,11 @@ def run_design_bundle(
     skip_table_manifest: bool = False,
     max_table_java_files: int = 8_000,
     max_table_xml_files: int = 2_000,
-    table_callchains_up: bool = False,
+    table_callchain_up: bool = False,
     max_table_callchain_java_scan: int = 12_000,
-    table_callchains_up_extra: bool = False,
+    table_callchain_up_extra: bool = False,
     max_table_up_extra_anchors: int = 24,
-    rest_callchains_down: bool = False,
+    entrypoint_callchain_down: bool = False,
     max_rest_down_endpoints: int = 0,
     rest_down_max_depth: int = 16,
     rest_down_max_nodes: int = 500,
@@ -89,8 +89,8 @@ def run_design_bundle(
     - **step2**：``rest-map.json`` + ``graphs/rest-map.mmd``（可 skip）
     - **step3**：``tables-manifest.json``（可 skip）
     - **step5′**：``queries`` 非空时各关键字 ``callchain-up`` → ``data/callchain-up-*.md``
-    - **step5**：``table_callchains_up``（CLI ``--table-callchains-up``）→ ``data/callchain-up-table/<物理表>/callchain-up-table-*.md``、``table-callchains-summary.json``；可选 ``table_callchains_up_extra``（CLI ``--table-callchains-up-extra``）同时打开 JDBC 字符串与 MyBatis Mapper 两类额外起点（``max_table_up_extra_anchors`` 对二者共用上限）
-    - **step4**：``rest_callchains_down``（CLI ``--rest-callchains-down``）→ ``data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md``、``rest-callchains-down-summary.json``
+    - **step5**：``table_callchain_up``（CLI ``--table-callchain-up``）→ ``data/callchain-up-table/<物理表>/callchain-up-table-*.md``、``table-callchain-summary.json``；可选 ``table_callchain_up_extra``（CLI ``--table-callchain-up-extra``）同时打开 JDBC 字符串与 MyBatis Mapper 两类额外起点（``max_table_up_extra_anchors`` 对二者共用上限）
+    - **step4**：``entrypoint_callchain_down``（CLI ``--entrypoint-callchain-down``）→ ``data/callchain-down-entrypoints/.../callchain-down-entrypoints-*.md``、``entrypoint-callchain-down-summary.json``
     - **step6**：``business_summary`` → 根目录 ``business.md``（合并各向下链 ``keyMethods``）
     - **step8**：根目录 ``index.md`` + 返回摘要 dict（stdout 由 CLI 打印）
 
@@ -112,8 +112,8 @@ def run_design_bundle(
 
     _log.info(
         "reverse-design bundle start project=%s output=%s skip_scan=%s skip_rest_map=%s "
-        "skip_symbols=%s skip_table_manifest=%s skip_callchain=%s table_callchains_up=%s "
-        "rest_callchains_down=%s business_summary=%s queries=%s "
+        "skip_symbols=%s skip_table_manifest=%s skip_callchain=%s table_callchain_up=%s "
+        "entrypoint_callchain_down=%s business_summary=%s queries=%s "
         "max_symbol_files=%s max_rest_map_files=%s tables_file=%s strict_tables=%s",
         root,
         output_dir,
@@ -122,8 +122,8 @@ def run_design_bundle(
         skip_symbols,
         skip_table_manifest,
         skip_callchain,
-        table_callchains_up,
-        rest_callchains_down,
+        table_callchain_up,
+        entrypoint_callchain_down,
         business_summary,
         queries,
         max_symbol_files,
@@ -156,7 +156,7 @@ def run_design_bundle(
 
     rest_map_for_down: dict[str, Any] | None = None
 
-    if not skip_rest_map:
+    if not skip_rest_map and not entrypoint_callchain_down:
         _log.info("reverse-design bundle: [step2] running rest_map max_files=%s", max_rest_map_files)
         rest = scan_rest_map(root, max_files=max_rest_map_files)
         rest_map_for_down = rest
@@ -171,23 +171,9 @@ def run_design_bundle(
             summary["endpointCount"],
             (graphs / "rest-map.mmd").relative_to(output_dir),
         )
-    elif rest_callchains_down:
-        rp = data / "rest-map.json"
-        if rp.is_file():
-            try:
-                rest_map_for_down = json.loads(rp.read_text(encoding="utf-8"))
-                _log.info(
-                    "reverse-design bundle: rest_callchains_down 使用已有 %s",
-                    rp.relative_to(output_dir),
-                )
-            except (OSError, json.JSONDecodeError) as e:
-                summary["warnings"].append(f"rest-callchains-down: 无法读取 rest-map.json: {e}")
-        else:
-            summary["warnings"].append(
-                "rest-callchains-down: 已 --skip-rest-map 且缺少 data/rest-map.json，跳过 REST 向下链"
-            )
+    # entrypoint-callchain-down 不依赖 rest-map；因此跳过生成/读取 rest-map。
 
-    manifest_for_callchains: dict[str, Any] | None = None
+    manifest_for_callchain: dict[str, Any] | None = None
 
     if not skip_table_manifest:
         _log.info(
@@ -208,7 +194,7 @@ def run_design_bundle(
             summary["warnings"].append(tm["error"])
             _log.warning("reverse-design bundle: [step3] table_manifest failed %s", tm["error"])
         else:
-            manifest_for_callchains = tm
+            manifest_for_callchain = tm
             p = data / "tables-manifest.json"
             _write_json(p, tm)
             summary["artifacts"].append(str(p.relative_to(output_dir)))
@@ -231,20 +217,20 @@ def run_design_bundle(
                 tm.get("extractedHitCount", 0),
                 len(tm.get("unresolvedTables") or []),
             )
-    elif table_callchains_up:
+    elif table_callchain_up:
         tm_existing = data / "tables-manifest.json"
         if tm_existing.is_file():
             try:
-                manifest_for_callchains = json.loads(tm_existing.read_text(encoding="utf-8"))
+                manifest_for_callchain = json.loads(tm_existing.read_text(encoding="utf-8"))
                 _log.info(
-                    "reverse-design bundle: table_callchains_up 使用已有 %s",
+                    "reverse-design bundle: table_callchain_up 使用已有 %s",
                     tm_existing.relative_to(output_dir),
                 )
             except (OSError, json.JSONDecodeError) as e:
-                summary["warnings"].append(f"table-callchains-up: 无法读取 tables-manifest.json: {e}")
+                summary["warnings"].append(f"table-callchain-up: 无法读取 tables-manifest.json: {e}")
         else:
             summary["warnings"].append(
-                "table-callchains-up: 已 --skip-table-manifest 且缺少 data/tables-manifest.json，跳过按表调用链"
+                "table-callchain-up: 已 --skip-table-manifest 且缺少 data/tables-manifest.json，跳过按表调用链"
             )
 
     if not skip_symbols:
@@ -277,8 +263,8 @@ def run_design_bundle(
             )
 
     will_queries = not skip_callchain and bool(queries)
-    will_table = bool(table_callchains_up and not skip_callchain and manifest_for_callchains)
-    will_rest = bool(rest_callchains_down and not skip_callchain and rest_map_for_down)
+    will_table = bool(table_callchain_up and not skip_callchain and manifest_for_callchain)
+    will_rest = bool(entrypoint_callchain_down and not skip_callchain)
 
     shared_lsp = None
     try:
@@ -327,17 +313,17 @@ def run_design_bundle(
 
         if will_table:
             _log.info(
-                "reverse-design bundle: [step5 按表向上] table_callchains_up depth=%s max_impl_scan=%s extra=%s cap_extra=%s",
+                "reverse-design bundle: [step5 按表向上] table_callchain_up depth=%s max_impl_scan=%s extra=%s cap_extra=%s",
                 callchain_max_depth,
                 max_table_callchain_java_scan,
-                bool(table_callchains_up_extra),
+                bool(table_callchain_up_extra),
                 int(max_table_up_extra_anchors),
             )
-            extra_anchors = bool(table_callchains_up_extra)
+            extra_anchors = bool(table_callchain_up_extra)
             cap_extra = int(max_table_up_extra_anchors)
-            tc = run_table_callchains_up(
+            tc = run_table_callchain_up(
                 root,
-                manifest_for_callchains,
+                manifest_for_callchain,
                 data,
                 jdtls_path=jdtls_path,
                 max_depth=callchain_max_depth,
@@ -350,10 +336,10 @@ def run_design_bundle(
                 max_table_up_mybatis_anchors=cap_extra,
             )
             if tc.get("error"):
-                summary["warnings"].append(f"table-callchains-up: {tc['error']}")
-                _log.warning("reverse-design bundle: table_callchains_up failed %s", tc.get("error"))
+                summary["warnings"].append(f"table-callchain-up: {tc['error']}")
+                _log.warning("reverse-design bundle: table_callchain_up failed %s", tc.get("error"))
             else:
-                summary["tableCallchainsUp"] = {
+                summary["tableCallchainUp"] = {
                     "summaryFile": tc.get("summaryFile"),
                     "resolvedCount": tc.get("resolvedCount", 0),
                     "errorCount": tc.get("errorCount", 0),
@@ -369,31 +355,35 @@ def run_design_bundle(
                 for r in tc.get("results") or []:
                     if r.get("jdtlsError"):
                         summary["warnings"].append(
-                            f"table-callchains-up {r.get('table')!r}: {str(r['jdtlsError'])[:200]}"
+                            f"table-callchain-up {r.get('table')!r}: {str(r['jdtlsError'])[:200]}"
                         )
                 for sk in tc.get("skipped") or []:
                     summary["warnings"].append(
-                        f"table-callchains-up 跳过 {sk.get('table')!r}: {sk.get('reason', '')[:180]}"
+                        f"table-callchain-up 跳过 {sk.get('table')!r}: {sk.get('reason', '')[:180]}"
                     )
                 _log.info(
-                    "reverse-design bundle: table_callchains_up done resolved=%s errors=%s skipped=%s",
+                    "reverse-design bundle: table_callchain_up done resolved=%s errors=%s skipped=%s",
                     tc.get("resolvedCount"),
                     tc.get("errorCount"),
                     tc.get("skippedCount"),
                 )
 
         if will_rest:
+            # 注意：此参数在 CLI 里已被重命名为 entrypoint-callchain-down；这里沿用原变量名以减少改动。
             cap = max_rest_down_endpoints if max_rest_down_endpoints and max_rest_down_endpoints > 0 else 0
             _log.info(
-                "reverse-design bundle: [step4 REST 向下] rest_callchains_down cap=%s depth=%s nodes=%s branches=%s",
+                "reverse-design bundle: [step4 entrypoints 向下] entrypoint_callchain_down cap=%s depth=%s nodes=%s branches=%s",
                 cap or "all",
                 rest_down_max_depth,
                 rest_down_max_nodes,
                 rest_down_max_branches,
             )
-            rd = run_rest_callchains_down(
+
+            # entrypoints 扫描本身是无 JDTLS 的静态过程；这里用 max_rest_map_files 作为扫描 .java 文件上限复用参数。
+            eps = scan_java_entrypoints(root, max_files=max_rest_map_files)
+            rd = run_entrypoint_callchain_down(
                 root,
-                rest_map_for_down,
+                eps,
                 data,
                 jdtls_path=jdtls_path,
                 max_endpoints=cap,
@@ -403,47 +393,48 @@ def run_design_bundle(
                 lsp_client=shared_lsp,
                 output_root=output_dir,
             )
-            if rd.get("error"):
-                summary["warnings"].append(f"rest-callchains-down: {rd['error']}")
-                _log.warning("reverse-design bundle: rest_callchains_down failed %s", rd.get("error"))
-            else:
-                summary["restCallchainsDown"] = {
-                    "summaryFile": rd.get("summaryFile"),
-                    "resolvedCount": rd.get("resolvedCount", 0),
-                    "errorCount": rd.get("errorCount", 0),
-                }
-                sf = rd.get("summaryFile")
-                if sf:
-                    summary["artifacts"].append(sf)
-                for r in rd.get("results") or []:
-                    of = r.get("outputFile")
-                    if of and "jdtlsError" not in r and of not in summary["artifacts"]:
-                        summary["artifacts"].append(of)
-                for r in rd.get("results") or []:
-                    if r.get("jdtlsError"):
-                        summary["warnings"].append(
-                            f"rest-callchains-down {r.get('httpMethod')} {r.get('path')!r}: "
-                            f"{str(r['jdtlsError'])[:200]}"
-                        )
-                _log.info(
-                    "reverse-design bundle: rest_callchains_down done resolved=%s errors=%s",
-                    rd.get("resolvedCount"),
-                    rd.get("errorCount"),
-                )
+
+            summary["entrypointCallchainDown"] = {
+                "summaryFile": rd.get("summaryFile"),
+                "resolvedCount": rd.get("resolvedCount", 0),
+                "errorCount": rd.get("errorCount", 0),
+            }
+            sf = rd.get("summaryFile")
+            if sf:
+                summary["artifacts"].append(sf)
+
+            for r in rd.get("results") or []:
+                of = r.get("outputFile")
+                if of and "jdtlsError" not in r and of not in summary["artifacts"]:
+                    summary["artifacts"].append(of)
+            for r in rd.get("results") or []:
+                if r.get("jdtlsError"):
+                    summary["warnings"].append(
+                        "entrypoint-callchain-down "
+                        f"{r.get('kind')!s} {r.get('file')!s}:{r.get('line')!s}: "
+                        f"{str(r['jdtlsError'])[:200]}"
+                    )
+            _log.info(
+                "reverse-design bundle: entrypoint_callchain_down done resolved=%s errors=%s",
+                rd.get("resolvedCount"),
+                rd.get("errorCount"),
+            )
     finally:
         if shared_lsp is not None:
             shared_lsp.shutdown()
 
-    if table_callchains_up_extra and not table_callchains_up:
+    if table_callchain_up_extra and not table_callchain_up:
         summary["warnings"].append(
-            "table-callchains-up-extra: 未指定 --table-callchains-up，已忽略额外 JDBC/MyBatis 锚点"
+            "table-callchain-up-extra: 未指定 --table-callchain-up，已忽略额外 JDBC/MyBatis 锚点"
         )
 
-    if table_callchains_up and skip_callchain:
-        summary["warnings"].append("table-callchains-up: 与 --skip-callchain 同时指定，已跳过按表调用链")
+    if table_callchain_up and skip_callchain:
+        summary["warnings"].append("table-callchain-up: 与 --skip-callchain 同时指定，已跳过按表调用链")
 
-    if rest_callchains_down and skip_callchain:
-        summary["warnings"].append("rest-callchains-down: 与 --skip-callchain 同时指定，已跳过 REST 向下链")
+    if entrypoint_callchain_down and skip_callchain:
+        summary["warnings"].append(
+            "entrypoint-callchain-down: 与 --skip-callchain 同时指定，已跳过 entrypoints 向下链"
+        )
 
     if business_summary:
         merged_km, n_down_reports = merge_key_methods_from_downchain_files(data, root)
@@ -455,7 +446,7 @@ def run_design_bundle(
             "downchainReportFilesRead": n_down_reports,
         }
         _log.info(
-            "reverse-design bundle: [step6] business.md merged=%s from_rest_down_reports=%s",
+            "reverse-design bundle: [step6] business.md merged=%s from_downchain_reports=%s",
             len(merged_km),
             n_down_reports,
         )
@@ -509,8 +500,8 @@ def run_design_bundle(
         "| step1 | 工程概要 | `data/modules.json`、`data/symbols-by-package.json` |",
         "| step2 | REST 清单 | `data/rest-map.json`、`graphs/rest-map.mmd` |",
         "| step3 | 数据库表清单 | `data/tables-manifest.json` |",
-        "| step4 | 每接口向下调用链 | `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`、`rest-callchains-down-summary.json`（`resolvedByController`，键同目录） |",
-        "| step5 | 每表向上调用链 | `data/callchain-up-table/<表>/callchain-up-table-*.md`、`table-callchains-summary.json`（`resolvedByPhysicalTable`，键同目录）；可选 `--table-callchains-up-extra` 另含同目录下 `*-sql-NN` / `*-mapper-NN`；关键字向上见 `callchain-up-*.md` |",
+        "| step4 | entrypoints 向下调用链 | `data/callchain-down-entrypoints/<safe_entrypoint_file>/callchain-down-entrypoints-*.md`、`entrypoint-callchain-down-summary.json` |",
+        "| step5 | 每表向上调用链 | `data/callchain-up-table/<表>/callchain-up-table-*.md`、`table-callchain-summary.json`（`resolvedByPhysicalTable`，键同目录）；可选 `--table-callchain-up-extra` 另含同目录下 `*-sql-NN` / `*-mapper-NN`；关键字向上见 `callchain-up-*.md` |",
         "| step6 | 关键业务位置 | 向下链报告（`.md` 文末 JSON）内字段；`business.md`（若生成） |",
         "| step7 | 补全实现细节 | **须另外**用 `jdtls-lsp analyze` / `callchain-up` / `callchain-down` 或 IDE |",
         "| step8 | 汇总（本文件） | `index.md` + 运行结束时的 stdout 摘要 JSON |",
@@ -535,9 +526,9 @@ def run_design_bundle(
             "## 设计约定（与 step 编号）",
             "",
             "- **step2 / REST 外向锚点**：读 `data/rest-map.json`，用 **类#方法 + 行** 作为 **step4** `callchain-down` 或 **step7** `analyze` 入口。",
-            "- **step4**：`reverse-design bundle --rest-callchains-down` 对每端点跑 `callchain-down` → `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`（Markdown，文末嵌入完整 JSON），汇总 `rest-callchains-down-summary.json`（按 Controller 分组，键同 `data/callchain-down-rest/<Controller>/`；与同次 bundle 内 **step5 / step5′** 共用一次 JDTLS）。",
+            "- **step4**：`reverse-design bundle --entrypoint-callchain-down` 对每个 entrypoint 跑 `callchain-down` → `data/callchain-down-entrypoints/<safe_entrypoint_file>/callchain-down-entrypoints-*.md`（Markdown，文末嵌入完整 JSON），汇总 `entrypoint-callchain-down-summary.json`；与同次 bundle 内 **step5 / step5′** 共用一次 JDTLS。",
             "- **step3 / 数据库锚点**：`data/tables-manifest.json`；**用户表清单**（`--tables-file` / `--tables`）；`unresolvedTables` 提示动态 SQL 等。",
-            "- **step5**：`--table-callchains-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、`table-callchains-summary.json`（按物理表分组，键同目录）；`--table-callchains-up-extra`（须同开）→ 同目录下 JDBC/MyBatis 额外链。**step5′**：`--queries` 为关键字 `callchain-up`（非按表）。",
+            "- **step5**：`--table-callchain-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、`table-callchain-summary.json`（按物理表分组，键同目录）；`--table-callchain-up-extra`（须同开）→ 同目录下 JDBC/MyBatis 额外链。**step5′**：`--queries` 为关键字 `callchain-up`（非按表）。",
             "- **step7**：单点 **`jdtls-lsp callchain-up` / `callchain-down` / `analyze`**（`references`、`callHierarchy` 等）。",
             "- **step1 补充**：`symbols-by-package.json` 为轻量索引，非调用链主线。",
             "- **step6**：`--business-summary` → `business.md`；向下链报告（`.md` 文末 JSON）含 `keyMethods`、`businessCandidate` 等。",

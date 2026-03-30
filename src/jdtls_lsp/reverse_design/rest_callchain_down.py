@@ -1,4 +1,7 @@
-"""step4 / CLI ``--rest-callchains-down``：编排 REST 端点 → ``jdtls_lsp.callchain.trace_outgoing_subgraph_sync``；摘要走 ``callchain.format``。"""
+"""**历史实现**：从 ``rest-map`` 编排 REST 端点 → ``jdtls_lsp.callchain.trace_outgoing_subgraph_sync``。
+
+bundle 的 step4 已切换为 ``entrypoint_callchain_down``（CLI ``--entrypoint-callchain-down``）。
+"""
 
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ from jdtls_lsp.logutil import get_logger
 if TYPE_CHECKING:
     from jdtls_lsp.client import LSPClient
 
-_log = get_logger("reverse_design.rest_callchains_down")
+_log = get_logger("reverse_design.rest_callchain_down")
 
 
 def _candidate_impl_simple_names(handler_simple: str) -> list[str]:
@@ -144,7 +147,7 @@ def endpoint_slug(ep: dict[str, Any]) -> str:
     return s[:100] if len(s) > 100 else s
 
 
-def run_rest_callchains_down(
+def run_rest_callchain_down(
     project_root: Path,
     rest_map: dict[str, Any],
     data_dir: Path,
@@ -165,9 +168,8 @@ def run_rest_callchains_down(
     ``max_endpoints``：``<=0`` 表示处理全部；否则只处理前 N 条（按 JSON 顺序）。
     若传入 ``lsp_client``，各端点复用该连接（由调用方 ``create_client`` / ``shutdown``）。
 
-    ``data_dir``：各端点 ``data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md``（Markdown，文末含完整 JSON）；``output_root``：``rest-callchains-down-summary.json``。
-
-    成功写入的报告在 ``query.restMapAnchor`` 中含 **restHitId**（``re-`` + 16 hex）及 rest-map 追溯字段；``rest-callchains-down-summary.json`` 按 **Controller FQCN** 分组：``resolvedByController`` / ``withErrorsByController``（键同 ``data/callchain-down-rest/<Controller>/``）；每条 result 亦含 ``restHitId`` / ``restMapAnchor``。
+    ``data_dir``：各端点 ``data/callchain-down-rest/<Controller FQCN>/callchain-down-rest-*.md``（Markdown，文末含完整 JSON）；``output_root``：``rest-callchain-down-summary.json``。
+    成功写入的报告在 ``query.restMapAnchor`` 中含 **restHitId**（``re-`` + 16 hex）及 rest-map 追溯字段；``rest-callchain-down-summary.json`` 按 **Controller FQCN** 分组：``resolvedByController`` / ``withErrorsByController``（键同 ``data/callchain-down-rest/<Controller>/``）；每条 result 亦含 ``restHitId`` / ``restMapAnchor``。
     """
     root = project_root.resolve()
     data_dir = data_dir.resolve()
@@ -351,7 +353,7 @@ def run_rest_callchains_down(
     resolved_by_ctrl = _by_controller(resolved_rows)
     errors_by_ctrl = _by_controller(error_rows)
 
-    summary_path = out_root / "rest-callchains-down-summary.json"
+    summary_path = out_root / "rest-callchain-down-summary.json"
     payload = {
         "projectRoot": str(root),
         "endpointsTotal": len(eps) if isinstance(eps, list) else 0,
@@ -377,3 +379,7 @@ def run_rest_callchains_down(
         "errorCount": err_n,
         "results": results,
     }
+
+
+__all__ = ["run_rest_callchain_down"]
+

@@ -1,4 +1,4 @@
-"""step5 / CLI ``--table-callchains-up``：表名 → ServiceImpl / @Entity /（可选）JDBC 字符串 SQL 行 / MyBatis Mapper 方法 → ``trace_call_chain_sync``。"""
+"""step5 / CLI ``--table-callchain-up``：表名 → ServiceImpl / @Entity /（可选）JDBC 字符串 SQL 行 / MyBatis Mapper 方法 → ``trace_call_chain_sync``。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from jdtls_lsp.callchain import summarize_trace_up_json, trace_call_chain_sync
 from jdtls_lsp.callchain.format import apply_manifest_anchor_to_callchain_markdown
-from jdtls_lsp.java_grep import SKIP_DIR_PARTS
+from jdtls_lsp.java_grep import SKIP_DIR_PARTS, java_scan_roots, walk_files_matching
 from jdtls_lsp.reverse_design.java_enclosing_method import java_enclosing_method_at_line
 from jdtls_lsp.reverse_design.mybatis_mapper_link import resolve_mapper_java_method_from_xml_line
 from jdtls_lsp.reverse_design.scan_java_top_level_types import scan_java_top_level_types
@@ -21,9 +21,10 @@ from jdtls_lsp.reverse_design.table_manifest import (
 
 if TYPE_CHECKING:
     from jdtls_lsp.client import LSPClient
+
 from jdtls_lsp.logutil import get_logger
 
-_log = get_logger("reverse_design.table_callchains_up")
+_log = get_logger("reverse_design.table_callchain_up")
 
 _PHYSICAL_TABLE = re.compile(r"^[a-z][a-z0-9_]*$")
 _PASCAL_JAVA_TYPE = re.compile(r"^[A-Z][a-zA-Z0-9]+$")
@@ -463,29 +464,30 @@ def _pick_method_for_field(lines: list[str], field: str, class_stem: str) -> tup
 def _collect_impls_using_repo(root: Path, repo_simple: str, *, max_scan: int) -> list[Path]:
     found: list[Path] = []
     scanned = 0
-    for p in sorted(root.rglob("*ServiceImpl.java")):
-        if _skip_path(p):
-            continue
-        rel = str(p).replace("\\", "/")
-        if "/src/main/java/" not in rel or "/test/" in rel:
-            continue
-        scanned += 1
-        if scanned > max_scan:
-            break
-        try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if repo_simple not in text:
-            continue
-        found.append(p)
+    for base in java_scan_roots(root):
+        for p in sorted(walk_files_matching(base, "*ServiceImpl.java")):
+            if _skip_path(p):
+                continue
+            rel = str(p).replace("\\", "/")
+            if "/src/main/java/" not in rel or "/test/" in rel:
+                continue
+            scanned += 1
+            if scanned > max_scan:
+                return found
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if repo_simple not in text:
+                continue
+            found.append(p)
     return found
 
 
 def _order_impls(paths: list[Path], entity: str) -> list[Path]:
     prefer = f"{entity}ServiceImpl.java"
     first = [p for p in paths if p.name == prefer]
-    rest = sorted((p for p in paths if p.name != prefer), key=lambda x: str(x))
+    rest = sorted((p for p in paths if p.name != prefer), key=str)
     return first + rest
 
 
@@ -590,16 +592,17 @@ def _class_simple_name_declaration_line_char(lines: list[str], simple: str) -> t
 def _collect_entity_java_paths(root: Path, simple: str, *, max_scan: int) -> list[Path]:
     found: list[Path] = []
     scanned = 0
-    for p in sorted(root.rglob(f"{simple}.java")):
-        if _skip_path(p):
-            continue
-        rel = str(p).replace("\\", "/")
-        if "/src/main/java/" not in rel or "/test/" in rel:
-            continue
-        scanned += 1
-        if scanned > max_scan:
-            break
-        found.append(p)
+    for base in java_scan_roots(root):
+        for p in sorted(walk_files_matching(base, f"{simple}.java")):
+            if _skip_path(p):
+                continue
+            rel = str(p).replace("\\", "/")
+            if "/src/main/java/" not in rel or "/test/" in rel:
+                continue
+            scanned += 1
+            if scanned > max_scan:
+                return found
+            found.append(p)
     return found
 
 
@@ -698,7 +701,7 @@ def safe_table_filename(table: str) -> str:
 _TABLE_UP_ROOT_DIRNAME = "callchain-up-table"
 
 
-def run_table_callchains_up(
+def run_table_callchain_up(
     project_root: Path,
     manifest: dict[str, Any],
     data_dir: Path,
@@ -724,9 +727,9 @@ def run_table_callchains_up(
     产物：``data/callchain-up-table/<物理表安全名>/callchain-up-table-<表>.md``、同目录下 ``…-entity.md``、可选 ``…-sql-NN.md``、``…-mapper-NN.md``。
 
     若传入 ``lsp_client``，各表复用该连接（由调用方 ``create_client`` / ``shutdown``）。
-    ``data_dir``：通常为 ``design/data``；表级报告写在 ``data_dir / callchain-up-table / <表>/``；``output_root``：``table-callchains-summary.json``。
+    ``data_dir``：通常为 ``design/data``；表级报告写在 ``data_dir / callchain-up-table / <表>/``；``output_root``：``table-callchain-summary.json``。
 
-    成功写入的 Markdown 与文末 JSON 的 ``query.manifestAnchor`` 含 **manifestHitId**（``ma-`` + 16 位 hex，由物理表、来源、文件、行等稳定派生）及 manifest 追溯字段；``table-callchains-summary.json`` 按 **物理表** 分组（``resolvedByPhysicalTable`` / ``withErrorsByPhysicalTable``，键同 ``data/callchain-up-table/<表>/``）；每条 result 亦含 ``manifestHitId`` / ``manifestAnchor``。
+    成功写入的 Markdown 与文末 JSON 的 ``query.manifestAnchor`` 含 **manifestHitId**（``ma-`` + 16 位 hex，由物理表、来源、文件、行等稳定派生）及 manifest 追溯字段；``table-callchain-summary.json`` 按 **物理表** 分组（``resolvedByPhysicalTable`` / ``withErrorsByPhysicalTable``，键同 ``data/callchain-up-table/<表>/``）；每条 result 亦含 ``manifestHitId`` / ``manifestAnchor``。
     """
     root = project_root.resolve()
     data_dir = data_dir.resolve()
@@ -1140,7 +1143,7 @@ def run_table_callchains_up(
     resolved_by_tbl = _by_physical_table(resolved_rows)
     errors_by_tbl = _by_physical_table(error_rows)
 
-    summary_path = out_root / "table-callchains-summary.json"
+    summary_path = out_root / "table-callchain-summary.json"
     payload = {
         "projectRoot": str(root),
         "tablesAttempted": tables,
@@ -1170,3 +1173,11 @@ def run_table_callchains_up(
         "skippedCount": len(skipped),
         "results": results,
     }
+
+
+__all__ = [
+    "resolve_entity_anchor_for_table",
+    "resolve_service_anchor_for_table",
+    "run_table_callchain_up",
+]
+

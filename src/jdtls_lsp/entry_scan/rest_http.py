@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from jdtls_lsp.java_grep import SKIP_DIR_PARTS
+from jdtls_lsp.java_grep import SKIP_DIR_PARTS, java_scan_roots, walk_files_matching
 from jdtls_lsp.logutil import get_logger
 
 _log = get_logger("entry_scan.rest_http")
@@ -23,6 +23,10 @@ _METHOD_LINE = re.compile(
 _MAPPING_IN_LINE = re.compile(
     r"@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*(\([^)]*\))?"
 )
+# Spring Web：``@RestController`` 与 ``@org.springframework.web.bind.annotation.RestController`` 等
+_REST_CONTROLLER = re.compile(r"@(?:[\w.]+\.)*RestController\b")
+# 仅 ``@Controller`` / ``@org.springframework.stereotype.Controller``（不含 RestController）
+_STEREOTYPE_CONTROLLER = re.compile(r"@(?:[\w.]+\.)*Controller\b")
 
 
 def _http_path_from_mapping(ann: str, paren: str | None) -> tuple[str | None, str]:
@@ -91,28 +95,22 @@ def _class_base_from_annots(lines: list[str]) -> str:
 
 def _is_controller_file(lines: list[str]) -> bool:
     """
-    视作 Spring Web 映射源文件：``@RestController`` / ``@Controller`` + 映射注解，
-    或 **仅有** 类级/方法级 ``@RequestMapping``、``@GetMapping`` 等（兼容旧代码、非 ``*Controller`` 类名）。
+    视作 Spring Web 映射源文件：``@RestController`` 或 stereotype ``@Controller``（含
+    ``@Controller(value = "…")`` 等属性），或 **仅有** 类级/方法级 ``@RequestMapping``、``@GetMapping`` 等
+    （兼容旧代码、非 ``*Controller`` 类名）。
+
+    ``@Controller`` 与 ``@RestController`` 一样：只要出现即视为待扫（不要求同文件内另有映射注解；
+    方法上可无映射或仅有子类/配置中的映射）。
+    支持限定名写法，如 ``@org.springframework.stereotype.Controller``。
     """
-    blob = "\n".join(lines[:500])
-    if "@RestController" in blob:
+    text = "\n".join(lines)
+    if _REST_CONTROLLER.search(text):
         return True
-    mapping_any = any(
-        x in blob
-        for x in (
-            "@GetMapping",
-            "@PostMapping",
-            "@PutMapping",
-            "@DeleteMapping",
-            "@PatchMapping",
-            "@RequestMapping",
-        )
-    )
-    if "@Controller" in blob and mapping_any:
+    if _STEREOTYPE_CONTROLLER.search(text) and not _REST_CONTROLLER.search(text):
         return True
     # 无 @Controller/@RestController，但存在 Spring MVC 映射注解（行首风格，减少误匹配注释内片段）
     if any(
-        re.search(rf"^\s*{re.escape(m)}\b", blob, re.MULTILINE)
+        re.search(rf"^\s*{re.escape(m)}\b", text, re.MULTILINE)
         for m in (
             "@RequestMapping",
             "@GetMapping",
@@ -170,67 +168,70 @@ def scan_rest_map(project_root: Path, *, max_files: int = 8_000) -> dict[str, An
     scanned = 0
     controller_files = 0
     _log.info("entry_scan rest-map start root=%s max_files=%s", root, max_files)
-    for path in sorted(root.rglob("*.java")):
-        if any(x in path.parts for x in SKIP_DIR_PARTS):
-            continue
-        scanned += 1
-        if scanned > max_files:
-            break
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        if not _is_controller_file(lines):
-            continue
-        controller_files += 1
-        pkg = ""
-        for ln in lines[:120]:
-            pm = _PACKAGE.match(ln)
-            if pm:
-                pkg = pm.group(1)
+    for base in java_scan_roots(root):
+        for path in sorted(walk_files_matching(base, "*.java")):
+            if any(x in path.parts for x in SKIP_DIR_PARTS):
+                continue
+            scanned += 1
+            if scanned > max_files:
                 break
-        try:
-            rel = str(path.relative_to(root))
-        except ValueError:
-            rel = str(path)
-
-        pending_ann: list[str] = []
-        class_base = ""
-        simple_class: str | None = None
-
-        for i, line in enumerate(lines):
-            s = line.strip()
-            if s.startswith("@"):
-                pending_ann.append(line)
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
                 continue
-            cm = _CLASS_LINE.match(line)
-            if cm:
-                simple_class = cm.group(1)
-                class_base = _class_base_from_annots(pending_ann)
-                pending_ann = []
+            if not _is_controller_file(lines):
                 continue
-            mm = _METHOD_LINE.match(line)
-            if mm:
-                method_name = mm.group(1)
-                if method_name in ("if", "for", "while", "switch", "catch", "try", "new"):
+            controller_files += 1
+            pkg = ""
+            for ln in lines[:120]:
+                pm = _PACKAGE.match(ln)
+                if pm:
+                    pkg = pm.group(1)
+                    break
+            try:
+                rel = str(path.relative_to(root))
+            except ValueError:
+                rel = str(path)
+
+            pending_ann: list[str] = []
+            class_base = ""
+            simple_class: str | None = None
+
+            for i, line in enumerate(lines):
+                s = line.strip()
+                if s.startswith("@"):
+                    pending_ann.append(line)
+                    continue
+                cm = _CLASS_LINE.match(line)
+                if cm:
+                    simple_class = cm.group(1)
+                    class_base = _class_base_from_annots(pending_ann)
                     pending_ann = []
                     continue
-                if pending_ann and _MAPPING_IN_LINE.search("\n".join(pending_ann)):
-                    endpoints.extend(
-                        _emit_from_ann_block(
-                            pending_ann,
-                            pkg=pkg,
-                            simple_class=simple_class,
-                            class_base=class_base,
-                            method_name=method_name,
-                            rel=rel,
-                            line_no=i + 1,
+                mm = _METHOD_LINE.match(line)
+                if mm:
+                    method_name = mm.group(1)
+                    if method_name in ("if", "for", "while", "switch", "catch", "try", "new"):
+                        pending_ann = []
+                        continue
+                    if pending_ann and _MAPPING_IN_LINE.search("\n".join(pending_ann)):
+                        endpoints.extend(
+                            _emit_from_ann_block(
+                                pending_ann,
+                                pkg=pkg,
+                                simple_class=simple_class,
+                                class_base=class_base,
+                                method_name=method_name,
+                                rel=rel,
+                                line_no=i + 1,
+                            )
                         )
-                    )
-                pending_ann = []
-                continue
-            if s and not s.startswith("//") and not s.startswith("*") and not s.startswith("import "):
-                pending_ann = []
+                    pending_ann = []
+                    continue
+                if s and not s.startswith("//") and not s.startswith("*") and not s.startswith("import "):
+                    pending_ann = []
+        if scanned > max_files:
+            break
 
     capped = scanned > max_files
     out = {

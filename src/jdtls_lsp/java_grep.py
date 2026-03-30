@@ -7,6 +7,9 @@ from __future__ import annotations
 
 __all__ = [
     "SKIP_DIR_PARTS",
+    "java_scan_roots",
+    "walk_files_matching",
+    "walk_files_under_roots",
     "METH_LIKE_LINE",
     "keyword_search_variants",
     "line_matches_text_needles",
@@ -19,15 +22,68 @@ __all__ = [
     "java_grep_report",
 ]
 
+import fnmatch
 import json
+import os
 import re
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 SKIP_DIR_PARTS = frozenset(
     {"target", "build", ".git", "node_modules", "dist", "out", ".gradle"}
 )
+
+
+def java_scan_roots(project_root: Path) -> list[Path]:
+    """
+    Maven/Gradle 默认源码根：若工程下存在任意 ``**/src/main`` 目录，则**只**在这些目录下扫描
+    （含 ``java`` / ``resources`` / ``kotlin`` 等）；否则退回 ``project_root`` 整树。
+
+    构建产物目录仍由 ``SKIP_DIR_PARTS``（如 ``target``）在遍历时排除。
+    """
+    root = project_root.resolve()
+    if not root.is_dir():
+        return [root]
+    try:
+        mains = sorted({p for p in root.glob("**/src/main") if p.is_dir()})
+    except OSError:
+        return [root]
+    return mains if mains else [root]
+
+
+def walk_files_matching(base: Path, name_glob: str) -> Iterator[Path]:
+    """
+    在 ``base`` 下按 ``fnmatch`` 匹配文件名（如 ``*.java``、``*ServiceImpl.java``）。
+
+    使用 ``os.walk(..., followlinks=False)``，且不进入名为 ``SKIP_DIR_PARTS`` 的子目录，
+    避免 ``pathlib.rglob`` 误入 ``target``、跟随坏符号链接导致 ``FileNotFoundError``。
+    """
+    try:
+        root = base.resolve()
+    except OSError:
+        return
+    if not root.is_dir():
+        return
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+            try:
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_PARTS]
+                for fn in filenames:
+                    if fnmatch.fnmatch(fn, name_glob):
+                        yield Path(dirpath) / fn
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+    except (FileNotFoundError, PermissionError, OSError):
+        return
+
+
+def walk_files_under_roots(project_root: Path, name_glob: str) -> Iterator[Path]:
+    """等价于对每个 ``java_scan_roots(project_root)`` 调用 ``walk_files_matching``。"""
+    for b in java_scan_roots(project_root):
+        yield from walk_files_matching(b, name_glob)
+
 
 # Method-like line after a grep hit (annotation/string) to try LSP resolution.
 METH_LIKE_LINE = re.compile(r"^\s*(public|private|protected|static)\s+.+\([^)]*\)")
@@ -89,6 +145,7 @@ def grep_java_via_ripgrep(project_root: Path, needles: list[str]) -> list[tuple[
         if not needle:
             continue
         try:
+            scan_paths = [str(p) for p in java_scan_roots(project_root)]
             r = subprocess.run(
                 [
                     "rg",
@@ -102,7 +159,7 @@ def grep_java_via_ripgrep(project_root: Path, needles: list[str]) -> list[tuple[
                     "--glob",
                     "!**/build/**",
                     needle,
-                    str(project_root),
+                    *scan_paths,
                 ],
                 capture_output=True,
                 text=True,
@@ -139,7 +196,7 @@ def grep_java_via_ripgrep(project_root: Path, needles: list[str]) -> list[tuple[
 def grep_java_walk(project_root: Path, needles: list[str]) -> list[tuple[Path, int, str]]:
     """Scan ``*.java`` with Python when ``rg`` is unavailable."""
     hits: list[tuple[Path, int, str]] = []
-    for p in project_root.rglob("*.java"):
+    for p in walk_files_under_roots(project_root, "*.java"):
         if any(x in p.parts for x in SKIP_DIR_PARTS):
             continue
         try:

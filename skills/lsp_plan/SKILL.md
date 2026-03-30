@@ -45,7 +45,7 @@ triggers:
 | 向上调用链 | `jdtls-lsp callchain-up "$PROJECT" --query <kw> --format markdown --max-depth N` |
 | 向下子图（BFS） | `jdtls-lsp callchain-down "$PROJECT" --class Foo --method bar --format markdown`（入口与 `callchain-up` 相同；多文件 grep 多起点不支持） |
 | 多起点去重 | `callchain-up` 加 `--grep-skip-interface --grep-skip-rest-entry --grep-max-entry-points 1` 等（见 `--help`） |
-| 逆向设计一键 | `jdtls-lsp reverse-design bundle "$PROJECT" -o ./design …`（step1–8 编排、可选 `--rest-callchains-down` / `--table-callchains-up` / `--business-summary`；详见 **jdtls-lsp-py README**） |
+| 逆向设计一键 | `jdtls-lsp reverse-design bundle "$PROJECT" -o ./design …`（step1–8 编排、可选 `--entrypoint-callchain-down` / `--table-callchain-up` / `--business-summary`；详见 **jdtls-lsp-py README**） |
 
 计划阶段可配合 **`glob`**、**`grep`** 缩小范围；需要 LSP 时 **只走上述命令**，不要用其它 LSP 工具。
 

@@ -11,8 +11,8 @@
 | **step1** | 工程概要 | `reverse-design scan`、`symbols`；`bundle` → `data/modules.json`、`symbols-by-package.json` |
 | **step2** | REST 接口清单（**静态入口扫描**，与 `entrypoints` 并列） | `reverse-design rest-map`；`bundle` → `data/rest-map.json`、`graphs/rest-map.mmd` |
 | **step3** | 数据库表清单 | `reverse-design db-tables`；`bundle` → `data/tables-manifest.json` |
-| **step4** | 每接口向下调用链 | `bundle --rest-callchains-down` → `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md`（文末 JSON）、根目录 `rest-callchains-down-summary.json`（`resolvedByController` / `withErrorsByController`，键同目录） |
-| **step5** | 每表向上调用链 | `bundle --table-callchains-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、根目录 `table-callchains-summary.json`（`resolvedByPhysicalTable` / `withErrorsByPhysicalTable`，键同目录）；`--queries` 为**关键字向上**（补充，非按表） |
+| **step4** | 每入口向下调用链 | `bundle --entrypoint-callchain-down` → `data/callchain-down-entrypoints/<safe_entrypoint_file>/callchain-down-entrypoints-*.md`（文末 JSON）、根目录 `entrypoint-callchain-down-summary.json` |
+| **step5** | 每表向上调用链 | `bundle --table-callchain-up` → `data/callchain-up-table/<物理表>/callchain-up-table-*.md`、根目录 `table-callchain-summary.json`（`resolvedByPhysicalTable` / `withErrorsByPhysicalTable`，键同目录）；`--queries` 为**关键字向上**（补充，非按表） |
 | **step6** | 链上关键业务位置 | 向下链 JSON 的 `keyMethods` / `businessCandidate` 等；`bundle --business-summary` → `business.md` |
 | **step7** | 关键处补全实现细节 | **工具链外**：`analyze`、`callchain-up`/`down` 单点、IDE；自动化叙述可接 LLM |
 | **step8** | 汇总、宏观→微观 | `bundle` 写入 `index.md` 与 stdout 摘要 JSON，与各汇总 JSON、`business.md` 构成总览 |
@@ -47,7 +47,7 @@
 - **信号（示例）**：`@Transactional`；被 **多条上游** 调用（入边多）；**向下** 直接/间接触及 **持久化 API**；方法名/类名含业务域关键词；用户给定 **关键字**（与现有 `callchain-up --query` 一致）。
 - **产出形态（目标）**：在 JSON/Markdown 中为节点打 **`businessCandidate: true`** 或单独 **`keyMethods[]`** 列表，并引用 **稳定锚点**（路径、行号、类#方法）。
 
-**说明**：**step6** 已在 **向下子图**（`callchain-down` / `data/callchain-down-rest/<Controller>/callchain-down-rest-*.md` 文末 JSON）上落地：节点带 `businessScore` / `businessCandidate` / `businessSignals`，顶层 `keyMethods`；`reverse-design bundle --business-summary` 合并为根目录 **`business.md`**（扫描递归匹配，兼容历史上 `data/` 根下扁平 `callchain-down-rest-*.md`）。**向上链**（`callchain-up`）的同类标权仍为可选后续。
+**说明**：**step6** 已在 **向下子图**（`callchain-down` / `data/callchain-down-entrypoints/.../callchain-down-entrypoints-*.md` 或历史 `callchain-down-rest/...` 文末 JSON）上落地：节点带 `businessScore` / `businessCandidate` / `businessSignals`，顶层 `keyMethods`；`reverse-design bundle --business-summary` 合并为根目录 **`business.md`**（扫描递归匹配，兼容历史上 `data/` 根下扁平 `callchain-down-*-*.md`）。**向上链**（`callchain-up`）的同类标权仍为可选后续。
 
 ### 1.4 数据库表识别（须兼容历史遗留工程）
 
@@ -75,7 +75,7 @@
 | **合并策略** | **清单 ∪ 抽取** 展示时：**清单优先**（排序、章节标题、REST↔表映射以清单为索引）；抽取得到但 **不在清单** 的表可作为 **`extractedOnly[]`**（低优先级或 `--strict-tables` 时隐藏）。 |
 | **驱动调用链** | 对清单中每张表：在仓库内 **按表名/规范名做受控搜索**（字符串、注解、XML）→ 得到 **方法锚点** → **`callchain-up`** 反查 API；与 **REST → callchain-down** 路径互补。 |
 
-**CLI / bundle 形态**：**`jdtls-lsp reverse-design db-tables`** 与 **`reverse-design bundle`** 支持 **`--tables-file`**、**`--tables`**、**`--strict-tables-only`**；bundle 另支持 **`--skip-table-manifest`**、**`--table-callchains-up`**（按表 `callchain-up`）。产物 **`data/tables-manifest.json`**（清单 + 抽取 + 未解析 + 锚点行）；**拼接 SQL** 仍待增强。
+**CLI / bundle 形态**：**`jdtls-lsp reverse-design db-tables`** 与 **`reverse-design bundle`** 支持 **`--tables-file`**、**`--tables`**、**`--strict-tables-only`**；bundle 另支持 **`--skip-table-manifest`**、**`--table-callchain-up`**（按表 `callchain-up`）。产物 **`data/tables-manifest.json`**（清单 + 抽取 + 未解析 + 锚点行）；**拼接 SQL** 仍待增强。
 
 ---
 
@@ -105,7 +105,7 @@
 4. **表维度**：对清单中每张表，用 **抽取/搜索** 得到锚点 → **`callchain-up`**；将 **抽取结果与清单 diff**（**`unresolvedTables`** / **`extractedOnly`**，§1.5）。
 5. 在导出 Markdown/JSON 上 **人工** 或 **后续自动化** 标出 **关键业务方法**（§1.3）。
 
-**bundle** 编排：**step5′** 用 **`--queries`** 预跑 **`callchain-up` JSON**；**step5** 用 **`--table-callchains-up`**；**step4** 用 **`--rest-callchains-down`**（与同次 bundle 内其它 callchain **共用一次 JDTLS**，可用 **`--max-rest-down-endpoints`** 限流）；**step6** 用 **`--business-summary`** → **`business.md`**。**step7** 仍以单点 **`analyze` / callchain** 为主。**不以** `symbols-by-package` **轻量符号表** 为主线索。
+**bundle** 编排：**step5′** 用 **`--queries`** 预跑 **`callchain-up` JSON**；**step5** 用 **`--table-callchain-up`**；**step4** 用 **`--entrypoint-callchain-down`**（与同次 bundle 内其它 callchain **共用一次 JDTLS**，可用 **`--max-rest-down-endpoints`** 限流）；**step6** 用 **`--business-summary`** → **`business.md`**。**step7** 仍以单点 **`analyze` / callchain** 为主。**不以** `symbols-by-package` **轻量符号表** 为主线索。
 
 ---
 
@@ -166,9 +166,10 @@
 | `reverse_design/batch_symbols_by_package.py` | **batch_symbols_by_package**：按包聚合轻量符号（**step1 补充**） |
 | `jdtls_lsp/java_javadoc.py` | `extract_javadoc_above_method`：从源码行解析方法紧上方 `/** … */`（`business.md`、链顶 REST `topEntry` 等共用） |
 | `jdtls_lsp/business_summary/`（与 `reverse_design/` 平级） | **step6**、CLI `--business-summary`：`annotate_downchain_business`、`merge_key_methods_from_downchain_files`、`format_business_md`（再导出 `extract_javadoc_above_method` 自 `java_javadoc`） |
-| `reverse_design/bundle.py` | 一键产出 `design/` + 可选 `callchain-up-*` / `callchain-up-table/<表>/…` / `callchain-down-rest/<Controller>/…` Markdown（文末 JSON） |
-| `reverse_design/rest_callchains_down.py` | 从 `rest-map` 批量 `callchain-down`（CLI `--rest-callchains-down`） |
-| `reverse_design/table_callchains_up.py` | 按表 `callchain-up`（CLI `--table-callchains-up`） |
+| `reverse_design/bundle.py` | 一键产出 `design/` + 可选 `callchain-up-*` / `callchain-up-table/<表>/…` / `callchain-down-entrypoints/<safe_entrypoint_file>/…` Markdown（文末 JSON） |
+| `reverse_design/entrypoint_callchain_down.py` | 从 `scan_java_entrypoints` 批量 `callchain-down`（CLI `--entrypoint-callchain-down`） |
+| `reverse_design/rest_callchain_down.py` | **历史实现**：从 `rest-map` 批量 `callchain-down`（保留为库 API，用于解释性/对照） |
+| `reverse_design/table_callchain_up.py` | 按表 `callchain-up`（CLI `--table-callchain-up`） |
 
 ---
 

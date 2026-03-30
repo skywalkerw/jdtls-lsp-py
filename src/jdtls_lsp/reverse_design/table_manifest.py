@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jdtls_lsp.java_grep import SKIP_DIR_PARTS
+from jdtls_lsp.java_grep import SKIP_DIR_PARTS, java_scan_roots, walk_files_matching
 from jdtls_lsp.logutil import get_logger
 from jdtls_lsp.reverse_design.java_enclosing_method import java_enclosing_method_at_line
 
@@ -36,8 +36,15 @@ _STRING_DOUBLE = re.compile(r"\"(?:[^\"\\]|\\.)*\"")
 _STRING_SINGLE = re.compile(r"'(?:[^'\\]|\\.)*'")
 
 _SQL_HINT = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE|FROM)\b", re.I)
+# FROM/JOIN/INTO/UPDATE 后接物理表（可带 schema：SCHEMA.TABLE_ABC）；排除子查询 FROM (...)
 _SQL_TABLE = re.compile(
-    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_][\w]*)",
+    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+(?!\()\s*([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)",
+    re.I,
+)
+_WITH_HEAD = re.compile(r"\bWITH\s+(?:RECURSIVE\s+)?", re.I)
+# 最外层 SELECT 的 FROM 子句结束（括号内 WHERE 不计入）
+_END_OUTER_FROM = re.compile(
+    r"\b(WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|OFFSET|FETCH|FOR\s+UPDATE)\b",
     re.I,
 )
 
@@ -95,9 +102,170 @@ _SQL_RESERVED = frozenset(
 )
 
 
+def _skip_string_literal(s: str, i: int) -> int:
+    """跳过 SQL 字符串字面量（``'`` / ``"``），``''`` 视为单引号转义。"""
+    if i >= len(s) or s[i] not in "'\"":
+        return i + 1
+    quote = s[i]
+    i += 1
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == quote:
+            if quote == "'" and i + 1 < n and s[i + 1] == "'":
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return n
+
+
+def _next_paren_scan_end(s: str, open_idx: int) -> int:
+    """从 ``open_idx`` 指向的 ``(`` 起，匹配到与之平衡的 ``)`` 之后的位置。"""
+    depth = 0
+    i = open_idx
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c in "'\"":
+            i = _skip_string_literal(s, i)
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _with_cte_names_casefold(s: str) -> set[str]:
+    """解析 ``WITH a AS (...), b AS (...)`` 中的 CTE 名（小写集合），用于忽略 ``SELECT * FROM a`` 中的别名。"""
+    out: set[str] = set()
+    m = _WITH_HEAD.search(s)
+    if not m:
+        return out
+    i = m.end()
+    n = len(s)
+    while True:
+        while i < n and s[i] in " \t\n\r,":
+            i += 1
+        if i >= n:
+            break
+        rest = s[i:].lstrip()
+        if rest.upper().startswith("SELECT"):
+            break
+        m2 = re.match(r"([A-Za-z_][\w]*)\s+AS\s*\(", s[i:], re.I)
+        if not m2:
+            break
+        name = m2.group(1)
+        if name.upper() in _SQL_RESERVED:
+            break
+        out.add(name.casefold())
+        open_paren = i + m2.end() - 1
+        i = _next_paren_scan_end(s, open_paren)
+    return out
+
+
+def _find_outer_from_clause_span(s: str) -> tuple[int, int] | None:
+    """返回最外层 ``FROM`` 之后、子句结束（``WHERE``/``GROUP BY``/…）之前的区间 ``[start, end)``。"""
+    n = len(s)
+    depth = 0
+    i = 0
+    while i < n:
+        c = s[i]
+        if c in "'\"":
+            i = _skip_string_literal(s, i)
+            continue
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0:
+            m = re.match(r"\bFROM\b", s[i:], re.I)
+            if m:
+                j = i + m.end()
+                while j < n and s[j] in " \t\n\r":
+                    j += 1
+                start = j
+                depth2 = 0
+                k = start
+                while k < n:
+                    if s[k] in "'\"":
+                        k = _skip_string_literal(s, k)
+                        continue
+                    if s[k] == "(":
+                        depth2 += 1
+                        k += 1
+                        continue
+                    if s[k] == ")":
+                        depth2 -= 1
+                        k += 1
+                        continue
+                    if depth2 == 0 and _END_OUTER_FROM.match(s, k):
+                        return (start, k)
+                    k += 1
+                return (start, n)
+        i += 1
+    return None
+
+
+def _comma_tables_from_from_body(body: str) -> list[str]:
+    """``FROM`` 子句片段内、括号深度为 0 处的 ``,`` 后表名（``FROM t1, t2`` / ``, sch.t2``）。"""
+    out: list[str] = []
+    depth = 0
+    i = 0
+    n = len(body)
+    while i < n:
+        c = body[i]
+        if c in "'\"":
+            i = _skip_string_literal(body, i)
+            continue
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0 and c == ",":
+            i += 1
+            while i < n and body[i] in " \t\n\r":
+                i += 1
+            if i >= n:
+                break
+            if body[i] == "(":
+                i += 1
+                depth += 1
+                continue
+            m = re.match(r"([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)", body[i:], re.I)
+            if m:
+                out.append(m.group(1).strip())
+                i += m.end()
+            continue
+        i += 1
+    return out
+
+
+def _append_sql_table_token(found: list[str], raw: str, *, cte_cf: set[str]) -> None:
+    if raw.upper() in _SQL_RESERVED:
+        return
+    if "." not in raw and raw.casefold() in cte_cf:
+        return
+    phys = raw.rsplit(".", 1)[-1].strip() if "." in raw else raw
+    found.append(phys)
+
+
 def normalize_table_token_to_physical(name: str) -> str:
     """将 manifest/代码中出现的表名字符串统一为**蛇形物理表键**（小写），便于 ``MonitorData`` 与 ``monitor_data`` 同组。
 
+    - ``schema.table`` / ``db.schema.table`` → 取**最后一段**作为物理表名再归一化。
     - 已是蛇形 ``[a-z][a-z0-9_]*`` → 转小写。
     - **PascalCase**（实体/JPQL 类名）→ 驼峰转蛇形后再小写。
     - 其它情况 → ``str`` 小写（兜底归并）。
@@ -105,6 +273,10 @@ def normalize_table_token_to_physical(name: str) -> str:
     t = str(name).strip()
     if not t:
         return t
+    if "." in t:
+        segs = [x.strip() for x in t.split(".") if x.strip()]
+        if segs:
+            t = segs[-1]
     if _PHYSICAL_TABLE_TOKEN.match(t):
         return t.lower()
     if _PASCAL_JAVA_TYPE.match(t):
@@ -168,41 +340,45 @@ def _merge_user_lists(file_tables: list[str], inline: list[str]) -> list[str]:
 
 
 def _tables_in_sql_fragment(s: str) -> list[str]:
+    """从 SQL 片段中抽取物理表名：``SCHEMA.TABLE``、``FROM t1, t2``、``WITH … AS`` 中 CTE 别名不计入。"""
     if not _SQL_HINT.search(s):
         return []
+    cte_cf = _with_cte_names_casefold(s)
     found: list[str] = []
     for m in _SQL_TABLE.finditer(s):
-        t = m.group(1)
-        if t.upper() in _SQL_RESERVED:
-            continue
-        found.append(t)
+        _append_sql_table_token(found, m.group(1).strip(), cte_cf=cte_cf)
+    span = _find_outer_from_clause_span(s)
+    if span is not None:
+        start, end = span
+        for raw in _comma_tables_from_from_body(s[start:end]):
+            _append_sql_table_token(found, raw, cte_cf=cte_cf)
     return found
 
 
 def _collect_java_paths(root: Path, max_files: int) -> list[Path]:
-    paths = sorted(root.rglob("*.java"))
     out: list[Path] = []
-    for p in paths:
-        if _skip_path(p):
-            continue
-        out.append(p)
-        if len(out) >= max_files:
-            break
-    return out
+    for base in java_scan_roots(root):
+        for p in sorted(walk_files_matching(base, "*.java")):
+            if _skip_path(p):
+                continue
+            out.append(p)
+            if len(out) >= max_files:
+                return sorted(out[:max_files], key=lambda x: str(x))
+    return sorted(out, key=lambda x: str(x))
 
 
 def _collect_xml_paths(root: Path, max_files: int) -> list[Path]:
-    paths = sorted(root.rglob("*.xml"))
     out: list[Path] = []
-    for p in paths:
-        if _skip_path(p):
-            continue
-        if "/test/" in str(p).replace("\\", "/") or p.name.startswith("."):
-            continue
-        out.append(p)
-        if len(out) >= max_files:
-            break
-    return out
+    for base in java_scan_roots(root):
+        for p in sorted(walk_files_matching(base, "*.xml")):
+            if _skip_path(p):
+                continue
+            if "/test/" in str(p).replace("\\", "/") or p.name.startswith("."):
+                continue
+            out.append(p)
+            if len(out) >= max_files:
+                return sorted(out[:max_files], key=lambda x: str(x))
+    return sorted(out, key=lambda x: str(x))
 
 
 def _scan_java_file(fp: Path, rel: str) -> list[dict[str, Any]]:
